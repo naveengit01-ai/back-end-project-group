@@ -1,5 +1,3 @@
-// server.js  (MongoDB version)
-
 require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
@@ -120,6 +118,7 @@ app.post("/addTrip", async (req, res) => {
     otp: pin,
     otp_expiry: new Date(Date.now() + 60 * 60 * 1000)
   });
+
   res.send({ status: "success", trip_id: trip._id, pin });
 });
 
@@ -135,6 +134,7 @@ app.post("/addClothes", async (req, res) => {
     otp: pin,
     otp_expiry: new Date(Date.now() + 60 * 60 * 1000)
   });
+
   res.send({ status: "success", trip_id: trip._id, pin });
 });
 
@@ -154,6 +154,7 @@ app.post("/pick-trip", async (req, res) => {
     { status: "picked", rider_id: req.body.rider_id },
     { new: true }
   );
+
   if (!trip) return res.send({ status: "fail" });
   res.send({ status: "success", pin: trip.otp });
 });
@@ -164,6 +165,7 @@ app.post("/pick-clothes-trip", async (req, res) => {
     { status: "picked", rider_id: req.body.rider_id },
     { new: true }
   );
+
   if (!trip) return res.send({ status: "fail" });
   res.send({ status: "success", pin: trip.otp });
 });
@@ -181,20 +183,42 @@ app.post("/verify-pin", async (req, res) => {
   }
   if (!trip) return res.send({ status: "not_found" });
 
-  if (
-    trip.status !== "picked" ||
-    String(trip.rider_id) !== String(rider_id)
-  ) return res.send({ status: "not_allowed" });
+  if (trip.status !== "picked" || String(trip.rider_id) !== String(rider_id))
+    return res.send({ status: "not_allowed" });
 
   if (Date.now() > new Date(trip.otp_expiry).getTime())
     return res.send({ status: "expired" });
 
-  if (trip.otp !== pin) return res.send({ status: "invalid" });
+  if (trip.otp !== pin)
+    return res.send({ status: "invalid" });
 
   trip.status = "completed";
+  trip.otp = null;
+  trip.otp_expiry = null;
   await trip.save();
 
   res.send({ status: "success", type });
+});
+
+// ================= CHECK TRIP STATUS =================
+app.get("/check-trip-status/:trip_id", async (req, res) => {
+  let trip = await Trip.findById(req.params.trip_id);
+
+  if (!trip) {
+    trip = await Clothes.findById(req.params.trip_id);
+  }
+
+  if (!trip) {
+    return res.status(404).json({
+      status: "not_found",
+      trip_status: "not_found"
+    });
+  }
+
+  res.json({
+    status: "success",
+    trip_status: trip.status
+  });
 });
 
 // ================= MY DATA =================
@@ -216,4 +240,6 @@ app.get("/my-clothes-trips/:rider_id", async (req, res) => {
 
 // ================= SERVER =================
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🔥 Server running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🔥 Server running on port ${PORT}`)
+);
