@@ -1,13 +1,22 @@
 {
+  "name": "dwjd-backend",
+  "version": "1.0.0",
+  "description": "Food & Clothes Donation Backend (MongoDB)",
+  "main": "Mongod.js",
+  "scripts": {
+    "start": "node Mongod.js",
+    "dev": "nodemon Mongod.js"
+  },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
-    "express": "^5.2.1",
+    "express": "^4.19.2",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.0.2",
-    "multer": "^2.0.2",
-    "mysql2": "^3.15.3",
+    "multer": "^2.0.2"
+  },
+  "devDependencies": {
     "nodemon": "^3.1.11"
   }
 }
