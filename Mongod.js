@@ -3,7 +3,6 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const multer = require("multer");
-const path = require("path");
 const fs = require("fs");
 
 const app = express();
@@ -12,24 +11,28 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "https://back-end-project-group.onrender.com"
-  ],
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "https://back-end-project-group.onrender.com"
+    ],
+    credentials: true
+  })
+);
 
-/* ================= HEALTH ================= */
+/* ================= HEALTH CHECK ================= */
 app.get("/", (req, res) => {
   res.send("Backend is running 🚀");
 });
 
-/* ================= UPLOAD ================= */
-const UPLOADS_DIR = path.join(__dirname, "uploads");
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-app.use("/uploads", express.static(UPLOADS_DIR));
+/* ================= FILE UPLOAD (RENDER SAFE) ================= */
+// Render allows writing ONLY to /tmp
+const UPLOADS_DIR = "/tmp/uploads";
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOADS_DIR),
@@ -38,89 +41,161 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }
+  limits: {
+    fileSize: 2 * 1024 * 1024 // 2MB max (safe)
+  }
 });
 
-/* ================= DB ================= */
-mongoose.connect(process.env.MONGO_URI)
+/* ================= DATABASE ================= */
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
   .catch(err => {
-    console.error(err);
+    console.error("❌ MongoDB Error:", err.message);
     process.exit(1);
   });
 
 /* ================= MODELS ================= */
-const User = mongoose.model("User", new mongoose.Schema({
-  firstname: String,
-  lastname: String,
-  address: String,
-  email: String,
-  ph_no: String,
-  user_name: String,
-  password: String,
-  user_type: String,
-  profile_photo: String
-}, { timestamps: true }));
+const User = mongoose.model(
+  "User",
+  new mongoose.Schema(
+    {
+      firstname: String,
+      lastname: String,
+      address: String,
+      email: String,
+      ph_no: String,
+      user_name: { type: String, unique: true },
+      password: String,
+      user_type: String, // user | rider
+      profile_photo: String
+    },
+    { timestamps: true }
+  )
+);
 
-const Trip = mongoose.model("Trip", new mongoose.Schema({
-  user_id: mongoose.Schema.Types.ObjectId,
-  rider_id: mongoose.Schema.Types.ObjectId,
-  food_type: String,
-  quantity: Number,
-  price: Number,
-  provider_type: String,
-  location: String,
-  status: { type: String, default: "pending" },
-  otp: String,
-  otp_expiry: Date
-}, { timestamps: true }));
+const Trip = mongoose.model(
+  "Trip",
+  new mongoose.Schema(
+    {
+      user_id: mongoose.Schema.Types.ObjectId,
+      rider_id: mongoose.Schema.Types.ObjectId,
+      food_type: String,
+      quantity: Number,
+      price: Number,
+      provider_type: String,
+      location: String,
+      status: { type: String, default: "pending" },
+      otp: String,
+      otp_expiry: Date
+    },
+    { timestamps: true }
+  )
+);
 
-const Clothes = mongoose.model("Clothes", new mongoose.Schema({
-  user_id: mongoose.Schema.Types.ObjectId,
-  rider_id: mongoose.Schema.Types.ObjectId,
-  cloth_type: String,
-  quantity: Number,
-  cloth_condition: String,
-  location: String,
-  status: { type: String, default: "pending" },
-  otp: String,
-  otp_expiry: Date
-}, { timestamps: true }));
+const Clothes = mongoose.model(
+  "Clothes",
+  new mongoose.Schema(
+    {
+      user_id: mongoose.Schema.Types.ObjectId,
+      rider_id: mongoose.Schema.Types.ObjectId,
+      cloth_type: String,
+      quantity: Number,
+      cloth_condition: String,
+      location: String,
+      status: { type: String, default: "pending" },
+      otp: String,
+      otp_expiry: Date
+    },
+    { timestamps: true }
+  )
+);
 
-/* ================= ROUTES ================= */
+/* ================= UTILS ================= */
+function generatePIN() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let pin = "";
+  for (let i = 0; i < 6; i++) {
+    pin += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return pin;
+}
 
-// SIGNUP
+/* ================= AUTH ================= */
 app.post("/signup", upload.single("profile_photo"), async (req, res) => {
-  const exists = await User.findOne({ user_name: req.body.user_name });
-  if (exists) return res.json({ status: "exists" });
+  try {
+    const exists = await User.findOne({ user_name: req.body.user_name });
+    if (exists) return res.json({ status: "exists" });
 
-  await User.create({
-    ...req.body,
-    profile_photo: req.file ? `/uploads/${req.file.filename}` : null
-  });
+    await User.create({
+      firstname: req.body.firstname,
+      lastname: req.body.lastname,
+      address: req.body.address,
+      email: req.body.email,
+      ph_no: req.body.ph_no,
+      user_name: req.body.user_name,
+      password: req.body.password, // (hash later)
+      user_type: req.body.user_type,
+      profile_photo: req.file ? req.file.filename : null
+    });
 
-  res.json({ status: "success" });
+    res.json({ status: "success" });
+  } catch (err) {
+    console.error("❌ Signup error:", err);
+    res.status(500).json({ status: "error" });
+  }
 });
 
-// LOGIN
 app.post("/login", async (req, res) => {
-  const user = await User.findOne(req.body);
+  const { user_name, password, user_type } = req.body;
+  const user = await User.findOne({ user_name, password, user_type });
   if (!user) return res.json({ status: "fail" });
   res.json({ status: "success", user });
 });
 
-// GET TRIPS (🔥 THIS WAS MISSING)
+/* ================= CREATE DONATIONS ================= */
+app.post("/addTrip", async (req, res) => {
+  try {
+    const pin = generatePIN();
+    const trip = await Trip.create({
+      ...req.body,
+      otp: pin,
+      otp_expiry: new Date(Date.now() + 60 * 60 * 1000)
+    });
+    res.json({ status: "success", trip_id: trip._id, pin });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+app.post("/addClothes", async (req, res) => {
+  try {
+    const pin = generatePIN();
+    const trip = await Clothes.create({
+      ...req.body,
+      otp: pin,
+      otp_expiry: new Date(Date.now() + 60 * 60 * 1000)
+    });
+    res.json({ status: "success", trip_id: trip._id, pin });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+/* ================= GET PENDING ================= */
 app.get("/get-trips", async (_, res) => {
-  const trips = await Trip.find({ status: "pending" });
+  const trips = await Trip.find({ status: "pending" }).sort({ createdAt: -1 });
   res.json(trips);
 });
 
 app.get("/get-clothes-trips", async (_, res) => {
-  const trips = await Clothes.find({ status: "pending" });
+  const trips = await Clothes.find({ status: "pending" }).sort({ createdAt: -1 });
   res.json(trips);
 });
 
-// PICK TRIP
+/* ================= PICK TRIP ================= */
 app.post("/pick-trip", async (req, res) => {
   const trip = await Trip.findOneAndUpdate(
     { _id: req.body.trip_id, status: "pending" },
@@ -130,11 +205,29 @@ app.post("/pick-trip", async (req, res) => {
   if (!trip) return res.json({ status: "fail" });
   res.json({ status: "success", pin: trip.otp });
 });
-app.get("/__test__", (req, res) => {
-  res.send("TEST ROUTE WORKING");
+
+app.post("/pick-clothes-trip", async (req, res) => {
+  const trip = await Clothes.findOneAndUpdate(
+    { _id: req.body.trip_id, status: "pending" },
+    { status: "picked" },
+    { new: true }
+  );
+  if (!trip) return res.json({ status: "fail" });
+  res.json({ status: "success", pin: trip.otp });
 });
 
+/* ================= CHECK STATUS ================= */
+app.get("/check-trip-status/:id", async (req, res) => {
+  let trip = await Trip.findById(req.params.id);
+  if (!trip) trip = await Clothes.findById(req.params.id);
+  if (!trip)
+    return res.json({ status: "not_found", trip_status: "not_found" });
+
+  res.json({ status: "success", trip_status: trip.status });
+});
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🔥 Server running on ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🔥 Server running on port ${PORT}`)
+);
