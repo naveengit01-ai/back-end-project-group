@@ -10,6 +10,7 @@ const app = express();
 
 /* ================= BASIC MIDDLEWARE ================= */
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // 🔥 REQUIRED FOR MULTER
 
 app.use(
   cors({
@@ -18,7 +19,6 @@ app.use(
       "http://localhost:3000",
       "https://back-end-project-group.onrender.com"
     ],
-    methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true
   })
 );
@@ -39,7 +39,13 @@ const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOADS_DIR),
   filename: (_, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
-const upload = multer({ storage });
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 🔥 5MB LIMIT (IMPORTANT)
+  }
+});
 
 /* ================= DATABASE ================= */
 mongoose
@@ -57,7 +63,9 @@ const UserSchema = new mongoose.Schema(
   {
     firstname: String,
     lastname: String,
+    address: String,
     email: String,
+    ph_no: String,
     user_name: { type: String, unique: true },
     password: String,
     user_type: String,
@@ -114,16 +122,26 @@ function generatePIN() {
 /* ================= AUTH ================= */
 app.post("/signup", upload.single("profile_photo"), async (req, res) => {
   try {
+    console.log("✅ Signup route hit");
+
     const exists = await User.findOne({ user_name: req.body.user_name });
     if (exists) return res.json({ status: "exists" });
 
     const user = await User.create({
-      ...req.body,
+      firstname: req.body.firstname,
+      lastname: req.body.lastname,
+      address: req.body.address,
+      email: req.body.email,
+      ph_no: req.body.ph_no,
+      user_name: req.body.user_name,
+      password: req.body.password,
+      user_type: req.body.user_type,
       profile_photo: req.file ? `/uploads/${req.file.filename}` : null
     });
 
-    res.json({ status: "success", user });
+    res.json({ status: "success", user_id: user._id });
   } catch (err) {
+    console.error("❌ Signup error:", err);
     res.status(500).json({ status: "error" });
   }
 });
@@ -145,7 +163,7 @@ app.post("/addTrip", async (req, res) => {
       otp_expiry: new Date(Date.now() + 60 * 60 * 1000)
     });
     res.json({ status: "success", trip_id: trip._id, pin });
-  } catch (err) {
+  } catch {
     res.status(500).json({ status: "error" });
   }
 });
@@ -159,122 +177,13 @@ app.post("/addClothes", async (req, res) => {
       otp_expiry: new Date(Date.now() + 60 * 60 * 1000)
     });
     res.json({ status: "success", trip_id: trip._id, pin });
-  } catch (err) {
+  } catch {
     res.status(500).json({ status: "error" });
   }
-});
-
-/* ================= GET PENDING ================= */
-app.get("/get-trips", async (_, res) => {
-  const trips = await Trip.find({ status: "pending" }).sort({ createdAt: -1 });
-  res.json(trips);
-});
-
-app.get("/get-clothes-trips", async (_, res) => {
-  const trips = await Clothes.find({ status: "pending" }).sort({ createdAt: -1 });
-  res.json(trips);
-});
-
-/* ================= PICK TRIP (SAFE) ================= */
-app.post("/pick-trip", async (req, res) => {
-  try {
-    const { trip_id, rider_id } = req.body;
-
-    if (
-      !mongoose.Types.ObjectId.isValid(trip_id) ||
-      !mongoose.Types.ObjectId.isValid(rider_id)
-    ) {
-      return res.status(400).json({ status: "fail", message: "Invalid IDs" });
-    }
-
-    const trip = await Trip.findOneAndUpdate(
-      { _id: trip_id, status: "pending" },
-      { status: "picked", rider_id },
-      { new: true }
-    );
-
-    if (!trip)
-      return res
-        .status(409)
-        .json({ status: "fail", message: "Trip already picked" });
-
-    res.json({ status: "success", pin: trip.otp });
-  } catch (err) {
-    console.error("Pick trip error:", err);
-    res.status(500).json({ status: "error" });
-  }
-});
-
-app.post("/pick-clothes-trip", async (req, res) => {
-  try {
-    const { trip_id, rider_id } = req.body;
-
-    if (
-      !mongoose.Types.ObjectId.isValid(trip_id) ||
-      !mongoose.Types.ObjectId.isValid(rider_id)
-    ) {
-      return res.status(400).json({ status: "fail", message: "Invalid IDs" });
-    }
-
-    const trip = await Clothes.findOneAndUpdate(
-      { _id: trip_id, status: "pending" },
-      { status: "picked", rider_id },
-      { new: true }
-    );
-
-    if (!trip)
-      return res
-        .status(409)
-        .json({ status: "fail", message: "Trip already picked" });
-
-    res.json({ status: "success", pin: trip.otp });
-  } catch (err) {
-    console.error("Pick clothes error:", err);
-    res.status(500).json({ status: "error" });
-  }
-});
-
-/* ================= VERIFY PIN ================= */
-app.post("/verify-pin", async (req, res) => {
-  try {
-    const { trip_id, rider_id, pin } = req.body;
-
-    let trip = await Trip.findById(trip_id);
-    if (!trip) trip = await Clothes.findById(trip_id);
-    if (!trip) return res.json({ status: "not_found" });
-
-    if (
-      trip.status !== "picked" ||
-      String(trip.rider_id) !== String(rider_id)
-    ) {
-      return res.json({ status: "not_allowed" });
-    }
-
-    if (trip.otp !== pin) return res.json({ status: "invalid" });
-
-    trip.status = "completed";
-    trip.otp = null;
-    trip.otp_expiry = null;
-    await trip.save();
-
-    res.json({ status: "success" });
-  } catch (err) {
-    res.status(500).json({ status: "error" });
-  }
-});
-
-/* ================= CHECK STATUS ================= */
-app.get("/check-trip-status/:id", async (req, res) => {
-  let trip = await Trip.findById(req.params.id);
-  if (!trip) trip = await Clothes.findById(req.params.id);
-  if (!trip)
-    return res.json({ status: "not_found", trip_status: "not_found" });
-
-  res.json({ status: "success", trip_status: trip.status });
 });
 
 /* ================= SERVER ================= */
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () =>
   console.log(`🔥 Server running on port ${PORT}`)
 );
