@@ -215,6 +215,45 @@ app.post("/pick-clothes-trip", async (req, res) => {
   if (!trip) return res.json({ status: "fail" });
   res.json({ status: "success", pin: trip.otp });
 });
+/* ================= VERIFY PIN ================= */
+app.post("/verify-pin", async (req, res) => {
+  try {
+    const { trip_id, rider_id, pin } = req.body;
+
+    let trip = await Trip.findById(trip_id);
+    let type = "food";
+
+    if (!trip) {
+      trip = await Clothes.findById(trip_id);
+      type = "clothes";
+    }
+
+    if (!trip) {
+      return res.json({ status: "not_found" });
+    }
+
+    if (
+      trip.status !== "picked" ||
+      String(trip.rider_id) !== String(rider_id)
+    ) {
+      return res.json({ status: "not_allowed" });
+    }
+
+    if (trip.otp !== pin) {
+      return res.json({ status: "invalid" });
+    }
+
+    trip.status = "completed";
+    trip.otp = null;
+    trip.otp_expiry = null;
+    await trip.save();
+
+    res.json({ status: "success", type });
+  } catch (err) {
+    console.error("Verify PIN error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
 
 /* ================= CHECK STATUS ================= */
 app.get("/check-trip-status/:id", async (req, res) => {
