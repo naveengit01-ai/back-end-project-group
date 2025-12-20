@@ -6,7 +6,14 @@ const multer = require("multer");
 const fs = require("fs");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
-const twilio = require("twilio");
+
+let twilioClient = null;
+if (process.env.TWILIO_SID && process.env.TWILIO_AUTH) {
+  twilioClient = require("twilio")(
+    process.env.TWILIO_SID,
+    process.env.TWILIO_AUTH
+  );
+}
 
 const app = express();
 
@@ -41,7 +48,8 @@ const upload = multer({
 });
 
 /* ================= DATABASE ================= */
-mongoose.connect(process.env.MONGO_URI)
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
   .catch(err => {
     console.error("❌ MongoDB Error:", err.message);
@@ -49,19 +57,25 @@ mongoose.connect(process.env.MONGO_URI)
   });
 
 /* ================= MODELS ================= */
-const User = mongoose.model("User", new mongoose.Schema({
-  firstname: String,
-  lastname: String,
-  address: String,
-  email: String,
-  ph_no: String,
-  user_name: { type: String, unique: true },
-  password: String,
-  user_type: String,
-  profile_photo: String
-}, { timestamps: true }));
+const User = mongoose.model(
+  "User",
+  new mongoose.Schema(
+    {
+      firstname: String,
+      lastname: String,
+      address: String,
+      email: String,
+      ph_no: String,
+      user_name: { type: String, unique: true },
+      password: String,
+      user_type: String,
+      profile_photo: String
+    },
+    { timestamps: true }
+  )
+);
 
-const TripSchema = {
+const baseTrip = {
   user_id: mongoose.Schema.Types.ObjectId,
   rider_id: mongoose.Schema.Types.ObjectId,
   status: { type: String, default: "pending" },
@@ -69,29 +83,41 @@ const TripSchema = {
   otp_expiry: Date
 };
 
-const Trip = mongoose.model("Trip", new mongoose.Schema({
-  ...TripSchema,
-  food_type: String,
-  quantity: Number,
-  price: Number,
-  provider_type: String,
-  location: String
-}, { timestamps: true }));
+const Trip = mongoose.model(
+  "Trip",
+  new mongoose.Schema(
+    {
+      ...baseTrip,
+      food_type: String,
+      quantity: Number,
+      price: Number,
+      provider_type: String,
+      location: String
+    },
+    { timestamps: true }
+  )
+);
 
-const Clothes = mongoose.model("Clothes", new mongoose.Schema({
-  ...TripSchema,
-  cloth_type: String,
-  quantity: Number,
-  cloth_condition: String,
-  location: String
-}, { timestamps: true }));
+const Clothes = mongoose.model(
+  "Clothes",
+  new mongoose.Schema(
+    {
+      ...baseTrip,
+      cloth_type: String,
+      quantity: Number,
+      cloth_condition: String,
+      location: String
+    },
+    { timestamps: true }
+  )
+);
 
 /* ================= JWT ================= */
 function generateToken(user) {
   return jwt.sign(
     { id: user._id, role: user.user_type },
     process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES }
+    { expiresIn: process.env.JWT_EXPIRES || "7d" }
   );
 }
 
@@ -122,29 +148,26 @@ const mailer = nodemailer.createTransport({
 });
 
 async function sendOtpMail(email, otp) {
+  if (!email) return;
   await mailer.sendMail({
-    from: `"DWJD App" <${process.env.EMAIL_USER}>`,
+    from: `"DWJD" <${process.env.EMAIL_USER}>`,
     to: email,
-    subject: "Your Pickup OTP",
-    html: `<h2>Your OTP: ${otp}</h2><p>Valid for 1 hour.</p>`
+    subject: "Pickup OTP",
+    html: `<h2>Your OTP: ${otp}</h2><p>Valid for 1 hour</p>`
   });
 }
 
-/* ================= SMS (TWILIO) ================= */
-const smsClient = twilio(
-  process.env.TWILIO_SID,
-  process.env.TWILIO_AUTH
-);
-
+/* ================= SMS (SAFE) ================= */
 async function sendOtpSMS(phone, otp) {
-  await smsClient.messages.create({
+  if (!twilioClient || !phone) return;
+  await twilioClient.messages.create({
     body: `DWJD Pickup OTP: ${otp}`,
     from: process.env.TWILIO_PHONE,
     to: phone
   });
 }
 
-/* ================= AUTH ROUTES ================= */
+/* ================= AUTH ================= */
 app.post("/signup", upload.single("profile_photo"), async (req, res) => {
   const exists = await User.findOne({ user_name: req.body.user_name });
   if (exists) return res.json({ status: "exists" });
@@ -175,8 +198,8 @@ async function createTrip(Model, body) {
   });
 
   const user = await User.findById(body.user_id);
-  if (user?.email) await sendOtpMail(user.email, otp);
-  if (user?.ph_no) await sendOtpSMS(user.ph_no, otp);
+  await sendOtpMail(user?.email, otp);
+  await sendOtpSMS(user?.ph_no, otp);
 
   return trip;
 }
@@ -193,8 +216,9 @@ app.post("/addClothes", auth, async (req, res) => {
 
 /* ================= RESEND OTP ================= */
 app.post("/resend-otp", auth, async (req, res) => {
-  let trip = await Trip.findById(req.body.trip_id) ||
-             await Clothes.findById(req.body.trip_id);
+  let trip =
+    (await Trip.findById(req.body.trip_id)) ||
+    (await Clothes.findById(req.body.trip_id));
 
   if (!trip) return res.json({ status: "not_found" });
 
@@ -204,24 +228,22 @@ app.post("/resend-otp", auth, async (req, res) => {
   await trip.save();
 
   const user = await User.findById(trip.user_id);
-  if (user?.email) await sendOtpMail(user.email, otp);
-  if (user?.ph_no) await sendOtpSMS(user.ph_no, otp);
+  await sendOtpMail(user?.email, otp);
+  await sendOtpSMS(user?.ph_no, otp);
 
   res.json({ status: "success" });
 });
 
 /* ================= VERIFY OTP ================= */
 app.post("/verify-pin", auth, async (req, res) => {
-  let trip = await Trip.findById(req.body.trip_id) ||
-             await Clothes.findById(req.body.trip_id);
+  let trip =
+    (await Trip.findById(req.body.trip_id)) ||
+    (await Clothes.findById(req.body.trip_id));
 
   if (!trip) return res.json({ status: "not_found" });
 
-  if (Date.now() > new Date(trip.otp_expiry))
-    return res.json({ status: "expired" });
-
-  if (trip.otp !== req.body.pin)
-    return res.json({ status: "invalid" });
+  if (Date.now() > trip.otp_expiry) return res.json({ status: "expired" });
+  if (trip.otp !== req.body.pin) return res.json({ status: "invalid" });
 
   trip.status = "completed";
   trip.otp = null;
