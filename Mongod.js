@@ -234,6 +234,11 @@ app.post("/login", async (req, res) => {
   });
 });
 
+/* ================= KEEP RENDER ALIVE ================= */
+app.get("/health", (_, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
 /* ================= START ================= */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () =>
