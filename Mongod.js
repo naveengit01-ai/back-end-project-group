@@ -70,15 +70,18 @@ const User = mongoose.model(
   )
 );
 
-/* ================= EMAIL ================= */
+/* ================= EMAIL (FIXED) ================= */
 const mailer = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
   }
 });
 
+/* ================= HELPERS ================= */
 function generateOTP() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
@@ -90,16 +93,27 @@ function strongPassword(pwd) {
 async function sendOTP(email, otp) {
   console.log("📧 Sending OTP to:", email);
 
-  if (!email || !email.includes("@")) {
-    throw new Error("Invalid email");
-  }
-
-  await mailer.sendMail({
-    from: `"DWJD" <${process.env.EMAIL_USER}>`,
+  const info = await mailer.sendMail({
+    from: {
+      name: "DWJD Support",
+      address: process.env.EMAIL_USER
+    },
     to: email,
-    subject: "DWJD Account Verification OTP",
-    html: `<h2>Your OTP: ${otp}</h2><p>Valid for 10 minutes</p>`
+    subject: "DWJD Account Verification Code",
+    html: `
+      <div style="font-family: Arial; padding:20px">
+        <h2>Verify your DWJD account</h2>
+        <p>Your One-Time Password (OTP):</p>
+        <h1 style="letter-spacing:4px">${otp}</h1>
+        <p>This OTP is valid for <b>10 minutes</b>.</p>
+        <p>If you didn’t request this, please ignore.</p>
+        <br/>
+        <p>— DWJD Team</p>
+      </div>
+    `
   });
+
+  console.log("✅ Mail sent:", info.messageId);
 }
 
 /* ================= SIGNUP ================= */
@@ -147,7 +161,7 @@ app.post("/signup", upload.single("profile_photo"), async (req, res) => {
 
     res.json({ status: "success" });
   } catch (err) {
-    console.error("❌ Signup error:", err.message);
+    console.error("❌ Signup error:", err);
     res.status(500).json({ status: "mail_failed" });
   }
 });
@@ -156,21 +170,16 @@ app.post("/signup", upload.single("profile_photo"), async (req, res) => {
 app.post("/resend-signup-otp", async (req, res) => {
   const { user_name } = req.body;
 
-  if (!user_name) return res.json({ status: "missing_username" });
-
   const user = await User.findOne({ user_name });
   if (!user) return res.json({ status: "not_found" });
 
-  const now = Date.now();
-  const lastSent = user.last_otp_sent?.getTime() || 0;
-
-  if (now - lastSent < 30_000) {
+  if (Date.now() - user.last_otp_sent < 30_000) {
     return res.json({ status: "wait", seconds: 30 });
   }
 
   const otp = generateOTP();
   user.signup_otp = otp;
-  user.otp_expiry = new Date(now + 10 * 60 * 1000);
+  user.otp_expiry = new Date(Date.now() + 10 * 60 * 1000);
   user.last_otp_sent = new Date();
   await user.save();
 
@@ -228,5 +237,5 @@ app.post("/login", async (req, res) => {
 /* ================= START ================= */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () =>
-  console.log(`🔥 Server running on port ${PORT}`)
+  console.log(`Server running on port ${PORT}`)
 );
