@@ -4,16 +4,9 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const multer = require("multer");
 const fs = require("fs");
+const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
-
-let twilioClient = null;
-if (process.env.TWILIO_SID && process.env.TWILIO_AUTH) {
-  twilioClient = require("twilio")(
-    process.env.TWILIO_SID,
-    process.env.TWILIO_AUTH
-  );
-}
 
 const app = express();
 
@@ -33,19 +26,7 @@ app.use(
 );
 
 /* ================= HEALTH ================= */
-app.get("/", (_, res) => res.send("Backend running 🚀"));
-
-/* ================= FILE UPLOAD (RENDER SAFE) ================= */
-const UPLOADS_DIR = "/tmp/uploads";
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (_, __, cb) => cb(null, UPLOADS_DIR),
-    filename: (_, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
-  }),
-  limits: { fileSize: 2 * 1024 * 1024 }
-});
+app.get("/", (_, res) => res.send("DWJD Backend Running 🚀"));
 
 /* ================= DATABASE ================= */
 mongoose
@@ -56,87 +37,38 @@ mongoose
     process.exit(1);
   });
 
-/* ================= MODELS ================= */
+/* ================= FILE UPLOAD ================= */
+const UPLOADS_DIR = "/tmp/uploads";
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_, __, cb) => cb(null, UPLOADS_DIR),
+    filename: (_, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+  })
+});
+
+/* ================= MODEL ================= */
 const User = mongoose.model(
   "User",
   new mongoose.Schema(
     {
       firstname: String,
       lastname: String,
-      address: String,
       email: String,
       ph_no: String,
       user_name: { type: String, unique: true },
       password: String,
       user_type: String,
-      profile_photo: String
+      profile_photo: String,
+      signup_otp: String,
+      otp_expiry: Date,
+      last_otp_sent: Date,
+      is_verified: { type: Boolean, default: false }
     },
     { timestamps: true }
   )
 );
-
-const baseTrip = {
-  user_id: mongoose.Schema.Types.ObjectId,
-  rider_id: mongoose.Schema.Types.ObjectId,
-  status: { type: String, default: "pending" },
-  otp: String,
-  otp_expiry: Date
-};
-
-const Trip = mongoose.model(
-  "Trip",
-  new mongoose.Schema(
-    {
-      ...baseTrip,
-      food_type: String,
-      quantity: Number,
-      price: Number,
-      provider_type: String,
-      location: String
-    },
-    { timestamps: true }
-  )
-);
-
-const Clothes = mongoose.model(
-  "Clothes",
-  new mongoose.Schema(
-    {
-      ...baseTrip,
-      cloth_type: String,
-      quantity: Number,
-      cloth_condition: String,
-      location: String
-    },
-    { timestamps: true }
-  )
-);
-
-/* ================= JWT ================= */
-function generateToken(user) {
-  return jwt.sign(
-    { id: user._id, role: user.user_type },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES || "7d" }
-  );
-}
-
-function auth(req, res, next) {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.status(401).json({ status: "unauthorized" });
-
-  try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ status: "invalid_token" });
-  }
-}
-
-/* ================= OTP ================= */
-function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
 
 /* ================= EMAIL ================= */
 const mailer = nodemailer.createTransport({
@@ -147,112 +79,154 @@ const mailer = nodemailer.createTransport({
   }
 });
 
-async function sendOtpMail(email, otp) {
-  if (!email) return;
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+function strongPassword(pwd) {
+  return /^(?=.*[a-z])(?=.*\d)(?=.*[@$!%*?&]).{8,}$/.test(pwd);
+}
+
+async function sendOTP(email, otp) {
+  console.log("📧 Sending OTP to:", email);
+
+  if (!email || !email.includes("@")) {
+    throw new Error("Invalid email");
+  }
+
   await mailer.sendMail({
     from: `"DWJD" <${process.env.EMAIL_USER}>`,
     to: email,
-    subject: "Pickup OTP",
-    html: `<h2>Your OTP: ${otp}</h2><p>Valid for 1 hour</p>`
+    subject: "DWJD Account Verification OTP",
+    html: `<h2>Your OTP: ${otp}</h2><p>Valid for 10 minutes</p>`
   });
 }
 
-/* ================= SMS (SAFE) ================= */
-async function sendOtpSMS(phone, otp) {
-  if (!twilioClient || !phone) return;
-  await twilioClient.messages.create({
-    body: `DWJD Pickup OTP: ${otp}`,
-    from: process.env.TWILIO_PHONE,
-    to: phone
-  });
-}
-
-/* ================= AUTH ================= */
+/* ================= SIGNUP ================= */
 app.post("/signup", upload.single("profile_photo"), async (req, res) => {
-  const exists = await User.findOne({ user_name: req.body.user_name });
-  if (exists) return res.json({ status: "exists" });
+  try {
+    const {
+      firstname,
+      lastname,
+      email,
+      ph_no,
+      user_name,
+      password,
+      user_type
+    } = req.body;
 
-  await User.create({
-    ...req.body,
-    profile_photo: req.file?.filename || null
-  });
+    if (!email || !email.includes("@")) {
+      return res.json({ status: "invalid_email" });
+    }
 
-  res.json({ status: "success" });
-});
+    const exists = await User.findOne({ user_name });
+    if (exists) return res.json({ status: "exists" });
 
-app.post("/login", async (req, res) => {
-  const user = await User.findOne(req.body);
-  if (!user) return res.json({ status: "fail" });
+    if (!strongPassword(password)) {
+      return res.json({ status: "weak_password" });
+    }
 
-  const token = generateToken(user);
-  res.json({ status: "success", token, user });
-});
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const otp = generateOTP();
 
-/* ================= CREATE DONATION ================= */
-async function createTrip(Model, body) {
-  const otp = generateOTP();
-  const trip = await Model.create({
-    ...body,
-    otp,
-    otp_expiry: new Date(Date.now() + 60 * 60 * 1000)
-  });
+    const user = await User.create({
+      firstname,
+      lastname,
+      email,
+      ph_no,
+      user_name,
+      password: hashedPassword,
+      user_type,
+      profile_photo: req.file?.filename || null,
+      signup_otp: otp,
+      otp_expiry: new Date(Date.now() + 10 * 60 * 1000),
+      last_otp_sent: new Date()
+    });
 
-  const user = await User.findById(body.user_id);
-  await sendOtpMail(user?.email, otp);
-  await sendOtpSMS(user?.ph_no, otp);
+    await sendOTP(user.email, otp);
 
-  return trip;
-}
-
-app.post("/addTrip", auth, async (req, res) => {
-  const trip = await createTrip(Trip, req.body);
-  res.json({ status: "success", trip_id: trip._id });
-});
-
-app.post("/addClothes", auth, async (req, res) => {
-  const trip = await createTrip(Clothes, req.body);
-  res.json({ status: "success", trip_id: trip._id });
+    res.json({ status: "success" });
+  } catch (err) {
+    console.error("❌ Signup error:", err.message);
+    res.status(500).json({ status: "mail_failed" });
+  }
 });
 
 /* ================= RESEND OTP ================= */
-app.post("/resend-otp", auth, async (req, res) => {
-  let trip =
-    (await Trip.findById(req.body.trip_id)) ||
-    (await Clothes.findById(req.body.trip_id));
+app.post("/resend-signup-otp", async (req, res) => {
+  const { user_name } = req.body;
 
-  if (!trip) return res.json({ status: "not_found" });
+  if (!user_name) return res.json({ status: "missing_username" });
+
+  const user = await User.findOne({ user_name });
+  if (!user) return res.json({ status: "not_found" });
+
+  const now = Date.now();
+  const lastSent = user.last_otp_sent?.getTime() || 0;
+
+  if (now - lastSent < 30_000) {
+    return res.json({ status: "wait", seconds: 30 });
+  }
 
   const otp = generateOTP();
-  trip.otp = otp;
-  trip.otp_expiry = new Date(Date.now() + 60 * 60 * 1000);
-  await trip.save();
+  user.signup_otp = otp;
+  user.otp_expiry = new Date(now + 10 * 60 * 1000);
+  user.last_otp_sent = new Date();
+  await user.save();
 
-  const user = await User.findById(trip.user_id);
-  await sendOtpMail(user?.email, otp);
-  await sendOtpSMS(user?.ph_no, otp);
+  await sendOTP(user.email, otp);
 
-  res.json({ status: "success" });
+  res.json({ status: "resent" });
 });
 
 /* ================= VERIFY OTP ================= */
-app.post("/verify-pin", auth, async (req, res) => {
-  let trip =
-    (await Trip.findById(req.body.trip_id)) ||
-    (await Clothes.findById(req.body.trip_id));
+app.post("/verify-signup-otp", async (req, res) => {
+  const { user_name, otp } = req.body;
 
-  if (!trip) return res.json({ status: "not_found" });
+  const user = await User.findOne({ user_name });
+  if (!user) return res.json({ status: "not_found" });
 
-  if (Date.now() > trip.otp_expiry) return res.json({ status: "expired" });
-  if (trip.otp !== req.body.pin) return res.json({ status: "invalid" });
+  if (Date.now() > user.otp_expiry) return res.json({ status: "expired" });
+  if (user.signup_otp !== otp) return res.json({ status: "invalid" });
 
-  trip.status = "completed";
-  trip.otp = null;
-  trip.otp_expiry = null;
-  await trip.save();
+  user.is_verified = true;
+  user.signup_otp = null;
+  user.otp_expiry = null;
+  await user.save();
 
-  res.json({ status: "success" });
+  res.json({ status: "verified" });
+});
+
+/* ================= LOGIN ================= */
+app.post("/login", async (req, res) => {
+  const { user_name, password, user_type } = req.body;
+
+  const user = await User.findOne({ user_name, user_type });
+  if (!user) return res.json({ status: "fail" });
+  if (!user.is_verified) return res.json({ status: "not_verified" });
+
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) return res.json({ status: "fail" });
+
+  const token = jwt.sign(
+    { id: user._id, role: user.user_type },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+
+  res.json({
+    status: "success",
+    token,
+    user: {
+      _id: user._id,
+      firstname: user.firstname,
+      user_type: user.user_type
+    }
+  });
 });
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🔥 Server running on ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🔥 Server running on port ${PORT}`)
+);
