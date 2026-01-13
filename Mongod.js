@@ -38,13 +38,20 @@ const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
 const sendOTP = async (email, otp) => {
-  await mailer.sendMail({
-    from: `"DWJD Support" <${process.env.EMAIL_USER}>`,
-    to: email,
-    subject: "DWJD OTP",
-    html: `<h2>Your OTP</h2><h1>${otp}</h1><p>Valid for 10 minutes</p>`
-  });
+  try {
+    const info = await mailer.sendMail({
+      from: `"DWJD Support" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "DWJD OTP",
+      html: `<h2>Your OTP</h2><h1>${otp}</h1>`
+    });
+
+    console.log("✅ OTP mail sent:", info.messageId);
+  } catch (err) {
+    console.error("❌ OTP mail failed:", err.message);
+  }
 };
+
 
 /* ================= HEALTH CHECK ================= */
 app.get("/health", (_, res) => res.send("OK"));
