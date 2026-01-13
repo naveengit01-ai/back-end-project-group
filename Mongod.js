@@ -35,9 +35,9 @@ const generateOTP = () =>
 /* ================= SEND OTP ================= */
 const sendOTP = async (email, otp) => {
   try {
-    const response = await resend.emails.send({
-      from: "DWJD <onboarding@resend.dev>", // REQUIRED for free tier
-      to: email,
+    const { data, error } = await resend.emails.send({
+      from: "DWJD <onboarding@resend.dev>", // free tier allowed
+      to: [email], // 🔥 MUST BE ARRAY
       subject: "Your DWJD OTP",
       html: `
         <div style="font-family:Arial,sans-serif">
@@ -49,11 +49,16 @@ const sendOTP = async (email, otp) => {
       `
     });
 
-    console.log("✅ OTP sent:", response.id);
-  } catch (error) {
-    console.error("❌ OTP SEND FAILED:", error);
+    if (error) {
+      console.error("❌ RESEND ERROR:", error);
+    } else {
+      console.log("✅ OTP email sent. Resend ID:", data.id);
+    }
+  } catch (err) {
+    console.error("❌ OTP SEND FAILED (CATCH):", err);
   }
 };
+
 
 /* ================= HEALTH ================= */
 app.get("/health", (_, res) => res.send("OK"));
