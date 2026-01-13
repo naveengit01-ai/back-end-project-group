@@ -2,9 +2,9 @@ require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
-const nodemailer = require("nodemailer");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const { Resend } = require("resend");
 
 const User = require("./models/User");
 const Donation = require("./models/Donation");
@@ -24,34 +24,35 @@ mongoose
     process.exit(1);
   });
 
-/* ================= EMAIL ================= */
-const mailer = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+/* ================= RESEND SETUP ================= */
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 /* ================= HELPERS ================= */
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
+/* ================= SEND OTP (RESEND) ================= */
 const sendOTP = async (email, otp) => {
   try {
-    const info = await mailer.sendMail({
-      from: `"DWJD Support" <${process.env.EMAIL_USER}>`,
+    await resend.emails.send({
+      from: "DWJD <onboarding@resend.dev>", // free tier sender
       to: email,
-      subject: "DWJD OTP",
-      html: `<h2>Your OTP</h2><h1>${otp}</h1>`
+      subject: "Your DWJD OTP",
+      html: `
+        <div style="font-family:Arial,sans-serif">
+          <h2>DWJD Verification</h2>
+          <p>Your OTP is:</p>
+          <h1 style="letter-spacing:4px">${otp}</h1>
+          <p>This OTP is valid for 10 minutes.</p>
+        </div>
+      `
     });
 
-    console.log("✅ OTP mail sent:", info.messageId);
+    console.log("✅ OTP sent to", email);
   } catch (err) {
-    console.error("❌ OTP mail failed:", err.message);
+    console.error("❌ OTP send failed:", err.message);
   }
 };
-
 
 /* ================= HEALTH CHECK ================= */
 app.get("/health", (_, res) => res.send("OK"));
@@ -129,10 +130,8 @@ app.post("/signup", async (req, res) => {
 
     await User.create(userData);
 
-    // 🔥 NON-BLOCKING EMAIL (CRITICAL FIX)
-    sendOTP(email, otp).catch(err =>
-      console.error("OTP Email Error:", err.message)
-    );
+    // 🔥 NON-BLOCKING OTP
+    sendOTP(email, otp);
 
     res.json({ status: "signup_success_otp_sent" });
   } catch (err) {
@@ -248,110 +247,14 @@ app.post("/donate", async (req, res) => {
     is_verified: false
   });
 
-  // 🔥 NON-BLOCKING EMAIL
-  sendOTP(donor_email, otp).catch(console.error);
+  // 🔥 NON-BLOCKING OTP
+  sendOTP(donor_email, otp);
 
   res.json({ status: "otp_sent", donation_id: donation._id });
-});
-
-/* ================= VERIFY DONATION OTP ================= */
-app.post("/verify-donate-otp", async (req, res) => {
-  const { donation_id, otp, rider_email } = req.body;
-
-  if (!donation_id || !otp || !rider_email) {
-    return res.json({ status: "missing_fields" });
-  }
-
-  const donation = await Donation.findById(donation_id);
-  if (!donation) return res.json({ status: "not_found" });
-
-  if (donation.is_verified) {
-    return res.json({ status: "already_verified" });
-  }
-
-  if (donation.otp !== otp) {
-    return res.json({ status: "invalid_otp" });
-  }
-
-  donation.is_verified = true;
-  donation.donation_status = "picked";
-  donation.rider_email = rider_email;
-  donation.picked_at = new Date();
-  donation.otp = null;
-  donation.otp_expiry = null;
-
-  await donation.save();
-
-  res.json({ status: "donation_verified_and_picked" });
-});
-
-/* ================= REJECT PICKUP ================= */
-app.post("/rider/reject-pickup", async (req, res) => {
-  const { donation_id, rider_email, reason } = req.body;
-
-  if (!donation_id || !rider_email || !reason) {
-    return res.json({ status: "missing_fields" });
-  }
-
-  const donation = await Donation.findOne({
-    _id: donation_id,
-    rider_email
-  });
-
-  if (!donation) {
-    return res.json({ status: "invalid_request" });
-  }
-
-  donation.donation_status = "not_picked";
-  donation.rider_email = null;
-  donation.rejection_reason = reason;
-
-  await donation.save();
-  res.json({ status: "pickup_rejected" });
-});
-
-/* ================= MARK DELIVERED ================= */
-app.post("/rider/mark-delivered", async (req, res) => {
-  const { donation_id, rider_email } = req.body;
-
-  const donation = await Donation.findOne({
-    _id: donation_id,
-    rider_email,
-    donation_status: "picked"
-  });
-
-  if (!donation) return res.json({ status: "invalid_request" });
-
-  donation.donation_status = "delivered";
-  donation.delivered_at = new Date();
-  await donation.save();
-
-  res.json({ status: "delivered_success" });
-});
-
-/* ================= MY RIDES ================= */
-app.post("/rider/my-rides", async (req, res) => {
-  const { rider_email } = req.body;
-
-  const rides = await Donation.find({
-    rider_email,
-    donation_status: { $in: ["picked", "delivered"] }
-  }).sort({ updatedAt: -1 });
-
-  res.json({ status: "success", rides });
-});
-
-/* ================= AVAILABLE PICKUPS ================= */
-app.post("/rider/available-pickups", async (req, res) => {
-  const donations = await Donation.find({
-    donation_status: "not_picked"
-  }).sort({ createdAt: -1 });
-
-  res.json({ status: "success", donations });
 });
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
-  console.log(`🚀 Server running on port ${PORT}`)
+  console.log(`Server running on port ${PORT}`)
 );
