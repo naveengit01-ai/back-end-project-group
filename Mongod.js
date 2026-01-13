@@ -18,7 +18,7 @@ app.use(cors());
 /* ================= DATABASE ================= */
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected sucess"))
+  .then(() => console.log("✅ MongoDB Connected"))
   .catch(err => {
     console.error("❌ MongoDB Error:", err.message);
     process.exit(1);
@@ -33,6 +33,7 @@ const mailer = nodemailer.createTransport({
   }
 });
 
+/* ================= HELPERS ================= */
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -41,9 +42,12 @@ const sendOTP = async (email, otp) => {
     from: `"DWJD Support" <${process.env.EMAIL_USER}>`,
     to: email,
     subject: "DWJD OTP",
-    html: `<h2>Your OTP</h2><h1>${otp}</h1>`
+    html: `<h2>Your OTP</h2><h1>${otp}</h1><p>Valid for 10 minutes</p>`
   });
 };
+
+/* ================= HEALTH CHECK ================= */
+app.get("/health", (_, res) => res.send("OK"));
 
 /* ================= SIGNUP ================= */
 app.post("/signup", async (req, res) => {
@@ -102,7 +106,8 @@ app.post("/signup", async (req, res) => {
       user_type,
       password: hashedPassword,
       otp,
-      otp_expiry: new Date(Date.now() + 10 * 60 * 1000)
+      otp_expiry: new Date(Date.now() + 10 * 60 * 1000),
+      is_verified: false
     };
 
     if (user_type === "rider") {
@@ -116,11 +121,15 @@ app.post("/signup", async (req, res) => {
     }
 
     await User.create(userData);
-    await sendOTP(email, otp);
+
+    // 🔥 NON-BLOCKING EMAIL (CRITICAL FIX)
+    sendOTP(email, otp).catch(err =>
+      console.error("OTP Email Error:", err.message)
+    );
 
     res.json({ status: "signup_success_otp_sent" });
   } catch (err) {
-    console.error(err);
+    console.error("Signup Error:", err);
     res.status(500).json({ status: "error" });
   }
 });
@@ -226,37 +235,25 @@ app.post("/donate", async (req, res) => {
     price_amount: finalPrice,
     pickup_location,
     remarks,
+    donation_status: "not_picked",
     otp,
-    otp_expiry: new Date(Date.now() + 10 * 60 * 1000)
+    otp_expiry: new Date(Date.now() + 10 * 60 * 1000),
+    is_verified: false
   });
 
-  await sendOTP(donor_email, otp);
+  // 🔥 NON-BLOCKING EMAIL
+  sendOTP(donor_email, otp).catch(console.error);
 
   res.json({ status: "otp_sent", donation_id: donation._id });
-});
-
-/* ================= RIDER PICKUP (LOCK) ================= */
-app.post("/rider/pickup", async (req, res) => {
-  const { donation_id, rider_email } = req.body;
-
-  const donation = await Donation.findById(donation_id);
-  if (!donation) return res.json({ status: "not_found" });
-
-  if (donation.donation_status !== "not_picked") {
-    return res.json({ status: "already_taken" });
-  }
-
-  donation.rider_email = rider_email;
-  donation.donation_status = "picked";
-  donation.picked_at = new Date();
-
-  await donation.save();
-  res.json({ status: "pickup_locked", donation });
 });
 
 /* ================= VERIFY DONATION OTP ================= */
 app.post("/verify-donate-otp", async (req, res) => {
   const { donation_id, otp, rider_email } = req.body;
+
+  if (!donation_id || !otp || !rider_email) {
+    return res.json({ status: "missing_fields" });
+  }
 
   const donation = await Donation.findById(donation_id);
   if (!donation) return res.json({ status: "not_found" });
@@ -270,17 +267,24 @@ app.post("/verify-donate-otp", async (req, res) => {
   }
 
   donation.is_verified = true;
+  donation.donation_status = "picked";
   donation.rider_email = rider_email;
+  donation.picked_at = new Date();
   donation.otp = null;
   donation.otp_expiry = null;
 
   await donation.save();
+
   res.json({ status: "donation_verified_and_picked" });
 });
 
 /* ================= REJECT PICKUP ================= */
 app.post("/rider/reject-pickup", async (req, res) => {
   const { donation_id, rider_email, reason } = req.body;
+
+  if (!donation_id || !rider_email || !reason) {
+    return res.json({ status: "missing_fields" });
+  }
 
   const donation = await Donation.findOne({
     _id: donation_id,
@@ -338,101 +342,6 @@ app.post("/rider/available-pickups", async (req, res) => {
 
   res.json({ status: "success", donations });
 });
-
-/* ================= GET USER BY EMAIL ================= */
-app.post("/get-user-by-email", async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.json({ status: "email_required" });
-    }
-
-    const user = await User.findOne({ email }).select(
-      "-password -otp -otp_expiry"
-    );
-
-    if (!user) {
-      return res.json({ status: "not_found" });
-    }
-
-    res.json({
-      status: "success",
-      user
-    });
-  } catch (err) {
-    console.error("Get User Error:", err);
-    res.status(500).json({ status: "error" });
-  }
-});
-/* ================= UPDATE USER PROFILE BY EMAIL ================= */
-app.put("/update-profile", async (req, res) => {
-  try {
-    const { email, first_name, last_name, phone } = req.body;
-
-    if (!email) {
-      return res.json({ status: "email_required" });
-    }
-
-    const updateData = {};
-
-    if (first_name) updateData.first_name = first_name;
-    if (last_name) updateData.last_name = last_name;
-    if (phone) updateData.phone = phone;
-
-    if (Object.keys(updateData).length === 0) {
-      return res.json({ status: "nothing_to_update" });
-    }
-
-    const user = await User.findOneAndUpdate(
-      { email },
-      { $set: updateData },
-      { new: true }
-    ).select("-password -otp -otp_expiry");
-
-    if (!user) {
-      return res.json({ status: "not_found" });
-    }
-
-    res.json({
-      status: "updated_successfully",
-      user
-    });
-  } catch (err) {
-    console.error("Update Profile Error:", err);
-    res.status(500).json({ status: "error" });
-  }
-});
-
-/* ================= MY REQUESTS (USER SIDE) ================= */
-app.post("/my-requests", async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.json({ status: "email_required" });
-    }
-
-    const requests = await Donation.find({ donor_email: email })
-      .sort({ createdAt: -1 }) // latest first
-      .select(
-        "item_type item_name quantity donation_status createdAt"
-      );
-
-    return res.json({
-      status: "success",
-      requests
-    });
-
-  } catch (err) {
-    console.error("My Requests Error:", err);
-    return res.status(500).json({
-      status: "error",
-      message: err.message
-    });
-  }
-});
-
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
