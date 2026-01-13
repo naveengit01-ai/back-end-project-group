@@ -26,16 +26,17 @@ mongoose
 
 /* ================= RESEND SETUP ================= */
 const resend = new Resend(process.env.RESEND_API_KEY);
+console.log("RESEND KEY LOADED:", !!process.env.RESEND_API_KEY);
 
 /* ================= HELPERS ================= */
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
-/* ================= SEND OTP (RESEND) ================= */
+/* ================= SEND OTP ================= */
 const sendOTP = async (email, otp) => {
   try {
-    await resend.emails.send({
-      from: "DWJD <onboarding@resend.dev>", // free tier sender
+    const response = await resend.emails.send({
+      from: "DWJD <onboarding@resend.dev>", // REQUIRED for free tier
       to: email,
       subject: "Your DWJD OTP",
       html: `
@@ -48,13 +49,13 @@ const sendOTP = async (email, otp) => {
       `
     });
 
-    console.log("✅ OTP sent to", email);
-  } catch (err) {
-    console.error("❌ OTP send failed:", err.message);
+    console.log("✅ OTP sent:", response.id);
+  } catch (error) {
+    console.error("❌ OTP SEND FAILED:", error);
   }
 };
 
-/* ================= HEALTH CHECK ================= */
+/* ================= HEALTH ================= */
 app.get("/health", (_, res) => res.send("OK"));
 
 /* ================= SIGNUP ================= */
@@ -130,7 +131,7 @@ app.post("/signup", async (req, res) => {
 
     await User.create(userData);
 
-    // 🔥 NON-BLOCKING OTP
+    // NON-BLOCKING OTP SEND
     sendOTP(email, otp);
 
     res.json({ status: "signup_success_otp_sent" });
@@ -247,7 +248,6 @@ app.post("/donate", async (req, res) => {
     is_verified: false
   });
 
-  // 🔥 NON-BLOCKING OTP
   sendOTP(donor_email, otp);
 
   res.json({ status: "otp_sent", donation_id: donation._id });
@@ -256,5 +256,5 @@ app.post("/donate", async (req, res) => {
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
-  console.log(`Server running on port ${PORT}`)
+  console.log(`🚀 Server running on port ${PORT}`)
 );
