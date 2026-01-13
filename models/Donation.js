@@ -37,8 +37,13 @@ const donationSchema = new mongoose.Schema(
 
     price_amount: {
       type: Number,
-      default: 0,
-      min: 0
+      default: 0
+    },
+
+    // 🔥 RIDER FLOW FIELDS (MISSING BEFORE)
+    rider_email: {
+      type: String,
+      default: null
     },
 
     donation_status: {
@@ -46,6 +51,10 @@ const donationSchema = new mongoose.Schema(
       enum: ["not_picked", "picked", "collected", "delivered"],
       default: "not_picked"
     },
+
+    picked_at: Date,
+    collected_at: Date,
+    delivered_at: Date,
 
     otp: String,
     otp_expiry: Date,
@@ -60,9 +69,8 @@ const donationSchema = new mongoose.Schema(
       required: true
     },
 
-    remarks: {
-      type: String
-    }
+    remarks: String,
+    rejection_reason: String
   },
   { timestamps: true }
 );
