@@ -166,55 +166,32 @@ app.post("/verify-otp", async (req, res) => {
 });
 
 /* ================= LOGIN ================= */
-// app.post("/login", async (req, res) => {
-//   const { email, password, user_type } = req.body;
 
-//   const user = await User.findOne({ email, user_type });
-//   if (!user) return res.json({ status: "invalid_credentials" });
-//   if (!user.is_verified) return res.json({ status: "email_not_verified" });
-
-//   const match = await bcrypt.compare(password, user.password);
-//   if (!match) return res.json({ status: "invalid_credentials" });
-
-//   const token = jwt.sign(
-//     { userId: user._id, role: user.user_type },
-//     process.env.JWT_SECRET,
-//     { expiresIn: "7d" }
-//   );
-
-//   res.json({
-//     status: "login_success",
-//     token,
-//     user: {
-//       email: user.email,
-//       first_name: user.first_name,
-//       user_type: user.user_type
-//     }
-//   });
-// });
 app.post("/login", async (req, res) => {
   try {
     const { email, password, user_type } = req.body;
 
-    // 🔥 STEP 1: Find user by email ONLY
+    // 1️⃣ Find user by email only
     const user = await User.findOne({ email });
     if (!user) {
       return res.json({ status: "invalid_credentials" });
     }
 
-    // 🔥 STEP 2: Check password
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
+    // 2️⃣ Password check
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
       return res.json({ status: "invalid_credentials" });
     }
 
-    // 🔥 STEP 3: Admin auto-detection (no dropdown needed)
+    // 3️⃣ ADMIN: bypass role + verification
     if (user.user_type === "admin") {
-      // allow login directly
-    } else {
-      // Normal users must match selected role
+      // admin always allowed
+    } 
+    // 4️⃣ USER / RIDER: STRICT OLD LOGIC
+    else {
+      // must match selected role (EXACTLY like before)
       if (user.user_type !== user_type) {
-        return res.json({ status: "wrong_role_selected" });
+        return res.json({ status: "invalid_credentials" });
       }
 
       if (!user.is_verified) {
@@ -222,28 +199,30 @@ app.post("/login", async (req, res) => {
       }
     }
 
-    // 🔐 JWT
+    // 5️⃣ JWT (same as before)
     const token = jwt.sign(
       { userId: user._id, role: user.user_type },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    res.json({
+    // 6️⃣ RESPONSE (frontend-safe)
+    return res.json({
       status: "login_success",
       token,
       user: {
         email: user.email,
         first_name: user.first_name,
-        user_type: user.user_type // admin/user/rider
+        user_type: user.user_type // admin | user | rider
       }
     });
 
   } catch (err) {
     console.error("Login Error:", err);
-    res.status(500).json({ status: "error" });
+    return res.status(500).json({ status: "error" });
   }
 });
+
 
 /* ================= DONATE ================= */
 app.post("/donate", async (req, res) => {
