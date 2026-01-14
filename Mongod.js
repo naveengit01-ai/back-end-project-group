@@ -446,6 +446,70 @@ app.post("/my-requests", async (req, res) => {
   }
 });
 
+// ---------------Advertisements --------------------------
+
+app.post("/admin/add-advertisement", async (req, res) => {
+  try {
+    const {
+      title,
+      description,
+      company_name,
+      amount_paid
+    } = req.body;
+
+    if (!title || !description || !company_name || !amount_paid) {
+      return res.json({ status: "missing_fields" });
+    }
+
+    const ad = await Advertisement.create({
+      title,
+      description,
+      company_name,
+      amount_paid
+    });
+
+    res.json({
+      status: "advertisement_added",
+      ad
+    });
+  } catch (err) {
+    res.status(500).json({ status: "error" });
+  }
+});
+
+app.get("/admin/overview", async (req, res) => {
+  const totalUsers = await User.countDocuments({ user_type: "user" });
+  const totalRiders = await User.countDocuments({ user_type: "rider" });
+
+  const delivered = await Donation.countDocuments({
+    donation_status: "delivered"
+  });
+
+  const rejected = await Donation.countDocuments({
+    rejection_reason: { $exists: true }
+  });
+
+  const activeAds = await Advertisement.countDocuments({
+    is_active: true
+  });
+
+  res.json({
+    totalUsers,
+    totalRiders,
+    delivered,
+    rejected,
+    activeAds
+  });
+});
+
+
+app.get("/advertisements", async (req, res) => {
+  const ads = await Advertisement.find({ is_active: true })
+    .sort({ createdAt: -1 });
+
+  res.json({ status: "success", ads });
+});
+
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;

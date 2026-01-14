@@ -50,7 +50,7 @@ const userSchema = new mongoose.Schema(
     /* ROLE */
     user_type: {
       type: String,
-      enum: ["user", "rider"],
+      enum: ["user", "rider","admin"],
       required: true
     },
 
