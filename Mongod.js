@@ -8,6 +8,7 @@ const { Resend } = require("resend");
 
 const User = require("./models/User");
 const Donation = require("./models/Donation");
+const Advertisement = require("./models/Advertisement");
 
 const app = express();
 
@@ -481,12 +482,7 @@ app.post("/my-requests", async (req, res) => {
 
 app.post("/admin/add-advertisement", async (req, res) => {
   try {
-    const {
-      title,
-      description,
-      company_name,
-      amount_paid
-    } = req.body;
+    const { title, description, company_name, amount_paid } = req.body;
 
     if (!title || !description || !company_name || !amount_paid) {
       return res.json({ status: "missing_fields" });
@@ -496,49 +492,58 @@ app.post("/admin/add-advertisement", async (req, res) => {
       title,
       description,
       company_name,
-      amount_paid
+      amount_paid,
+      is_active: true
     });
 
-    res.json({
-      status: "advertisement_added",
-      ad
-    });
+    res.json({ status: "advertisement_added", ad });
   } catch (err) {
+    console.error("ADD AD ERROR:", err);
     res.status(500).json({ status: "error" });
   }
 });
 
 app.get("/admin/overview", async (req, res) => {
-  const totalUsers = await User.countDocuments({ user_type: "user" });
-  const totalRiders = await User.countDocuments({ user_type: "rider" });
+  try {
+    const totalUsers = await User.countDocuments({ user_type: "user" });
+    const totalRiders = await User.countDocuments({ user_type: "rider" });
 
-  const delivered = await Donation.countDocuments({
-    donation_status: "delivered"
-  });
+    const delivered = await Donation.countDocuments({
+      donation_status: "delivered"
+    });
 
-  const rejected = await Donation.countDocuments({
-    rejection_reason: { $exists: true }
-  });
+    const rejected = await Donation.countDocuments({
+      rejection_reason: { $exists: true }
+    });
 
-  const activeAds = await Advertisement.countDocuments({
-    is_active: true
-  });
+    const activeAds = await Advertisement.countDocuments({
+      $or: [{ is_active: true }, { is_active: { $exists: false } }]
+    });
 
-  res.json({
-    totalUsers,
-    totalRiders,
-    delivered,
-    rejected,
-    activeAds
-  });
+    res.json({
+      status: "success",
+      totalUsers,
+      totalRiders,
+      delivered,
+      rejected,
+      activeAds
+    });
+  } catch (err) {
+    console.error("ADMIN OVERVIEW ERROR:", err);
+    res.status(500).json({ status: "error" });
+  }
 });
 
-
 app.get("/advertisements", async (req, res) => {
-  const ads = await Advertisement.find({ is_active: true })
-    .sort({ createdAt: -1 });
+  try {
+    const ads = await Advertisement.find({
+      $or: [{ is_active: true }, { is_active: { $exists: false } }]
+    }).sort({ createdAt: -1 });
 
-  res.json({ status: "success", ads });
+    res.json({ status: "success", ads });
+  } catch (err) {
+    res.status(500).json({ status: "error" });
+  }
 });
 
 
