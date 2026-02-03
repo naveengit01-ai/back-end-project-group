@@ -294,6 +294,39 @@ app.get("/advertisements", async (req, res) => {
   res.json({ status: "success", ads });
 });
 
+/* ================= RESEND USER OTP ================= */
+app.post("/resend-otp", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.json({ status: "email_required" });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.json({ status: "not_found" });
+    }
+
+    if (user.is_verified) {
+      return res.json({ status: "already_verified" });
+    }
+
+    const newOtp = generateOTP();
+    user.otp = newOtp;
+    user.otp_expiry = new Date(Date.now() + 10 * 60 * 1000);
+
+    await user.save();
+    await sendOTP(email, newOtp);
+
+    res.json({ status: "otp_resent" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
