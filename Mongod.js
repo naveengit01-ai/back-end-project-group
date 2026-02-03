@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
-const { Resend } = require("resend");
+const axios = require("axios");
 
 const User = require("./models/User");
 const Donation = require("./models/Donation");
@@ -19,45 +19,49 @@ app.use(cors());
 /* ================= DATABASE ================= */
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected sucess"))
+  .then(() => console.log("✅ MongoDB Connected"))
   .catch(err => {
     console.error("❌ MongoDB Error:", err.message);
     process.exit(1);
   });
 
-/* ================= EMAIL ================= */
-const resend = new Resend(process.env.RESEND_API_KEY);
-console.log("RESEND KEY LOADED:", !!process.env.RESEND_API_KEY);
-
+/* ================= EMAIL (BREVO) ================= */
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
 const sendOTP = async (email, otp) => {
   try {
-    const { data, error } = await resend.emails.send({
-      from: "DWJD <onboarding@resend.dev>", // free tier allowed
-      to: [email], // 🔥 MUST BE ARRAY
-      subject: "Your DWJD OTP",
-      html: `
-        <div style="font-family:Arial,sans-serif">
-          <h2>DWJD Verification</h2>
-          <p>Your OTP is:</p>
-          <h1 style="letter-spacing:4px">${otp}</h1>
-          <p>This OTP is valid for 10 minutes.</p>
-        </div>
-      `
-    });
+    const response = await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      {
+        sender: {
+          name: "DWJD",
+          email: "naveengit01@gmail.com" // must be verified in Brevo
+        },
+        to: [{ email }],
+        subject: "Your DWJD OTP",
+        htmlContent: `
+          <div style="font-family:Arial">
+            <h2>DWJD Verification</h2>
+            <p>Your OTP is:</p>
+            <h1 style="letter-spacing:4px">${otp}</h1>
+            <p>Valid for 10 minutes</p>
+          </div>
+        `
+      },
+      {
+        headers: {
+          "api-key": process.env.BREVO_API_KEY,
+          "Content-Type": "application/json"
+        }
+      }
+    );
 
-    if (error) {
-      console.error("❌ RESEND ERROR:", error);
-    } else {
-      console.log("✅ OTP email sent. Resend ID:", data.id);
-    }
+    console.log("✅ OTP sent:", response.data.messageId);
   } catch (err) {
-    console.error("❌ OTP SEND FAILED (CATCH):", err);
+    console.error("❌ Brevo Error:", err.response?.data || err.message);
   }
 };
-
 
 /* ================= SIGNUP ================= */
 app.post("/signup", async (req, res) => {
@@ -76,32 +80,28 @@ app.post("/signup", async (req, res) => {
     } = req.body;
 
     if (
-      !username ||
-      !first_name ||
-      !last_name ||
-      !phone ||
-      !email ||
-      !user_type ||
-      !password ||
-      !confirm_password
+      !username || !first_name || !last_name ||
+      !phone || !email || !user_type ||
+      !password || !confirm_password
     ) {
       return res.json({ status: "missing_fields" });
     }
 
-    if (username.length < 6) {
-      return res.json({ status: "invalid_username" });
-    }
-
-    if (await User.findOne({ username })) {
-      return res.json({ status: "username_exists" });
-    }
-
-    if (await User.findOne({ email })) {
-      return res.json({ status: "user_exists" });
-    }
-
-    if (password !== confirm_password) {
+    if (password !== confirm_password)
       return res.json({ status: "password_mismatch" });
+
+    const existingUser = await User.findOne({ email });
+
+    if (existingUser) {
+      if (existingUser.is_verified)
+        return res.json({ status: "user_exists" });
+
+      const newOtp = generateOTP();
+      existingUser.otp = newOtp;
+      existingUser.otp_expiry = new Date(Date.now() + 10 * 60 * 1000);
+      await existingUser.save();
+      await sendOTP(email, newOtp);
+      return res.json({ status: "otp_resent" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -116,13 +116,14 @@ app.post("/signup", async (req, res) => {
       user_type,
       password: hashedPassword,
       otp,
-      otp_expiry: new Date(Date.now() + 10 * 60 * 1000)
+      otp_expiry: new Date(Date.now() + 10 * 60 * 1000),
+      is_verified: false
     };
 
     if (user_type === "rider") {
-      if (!latitude || !longitude) {
+      if (!latitude || !longitude)
         return res.json({ status: "location_required" });
-      }
+
       userData.rider_location = {
         lat: Number(latitude),
         lng: Number(longitude)
@@ -142,21 +143,12 @@ app.post("/signup", async (req, res) => {
 /* ================= VERIFY USER OTP ================= */
 app.post("/verify-otp", async (req, res) => {
   const { email, otp } = req.body;
-
   const user = await User.findOne({ email });
+
   if (!user) return res.json({ status: "not_found" });
-
-  if (user.is_verified) {
-    return res.json({ status: "already_verified" });
-  }
-
-  if (Date.now() > user.otp_expiry) {
-    return res.json({ status: "otp_expired" });
-  }
-
-  if (user.otp !== otp) {
-    return res.json({ status: "invalid_otp" });
-  }
+  if (user.is_verified) return res.json({ status: "already_verified" });
+  if (Date.now() > user.otp_expiry) return res.json({ status: "otp_expired" });
+  if (user.otp !== otp) return res.json({ status: "invalid_otp" });
 
   user.is_verified = true;
   user.otp = null;
@@ -167,385 +159,140 @@ app.post("/verify-otp", async (req, res) => {
 });
 
 /* ================= LOGIN ================= */
-
 app.post("/login", async (req, res) => {
-  try {
-    const { email, password, user_type } = req.body;
+  const { email, password, user_type } = req.body;
 
-    // 1️⃣ Find user by email only
-    const user = await User.findOne({ email });
-    if (!user) {
+  const user = await User.findOne({ email });
+  if (!user) return res.json({ status: "invalid_credentials" });
+
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) return res.json({ status: "invalid_credentials" });
+
+  if (user.user_type !== "admin") {
+    if (user.user_type !== user_type)
       return res.json({ status: "invalid_credentials" });
-    }
-
-    // 2️⃣ Password check
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.json({ status: "invalid_credentials" });
-    }
-
-    // 3️⃣ ADMIN: bypass role + verification
-    if (user.user_type === "admin") {
-      // admin always allowed
-    } 
-    // 4️⃣ USER / RIDER: STRICT OLD LOGIC
-    else {
-      // must match selected role (EXACTLY like before)
-      if (user.user_type !== user_type) {
-        return res.json({ status: "invalid_credentials" });
-      }
-
-      if (!user.is_verified) {
-        return res.json({ status: "email_not_verified" });
-      }
-    }
-
-    // 5️⃣ JWT (same as before)
-    const token = jwt.sign(
-      { userId: user._id, role: user.user_type },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    // 6️⃣ RESPONSE (frontend-safe)
-    return res.json({
-      status: "login_success",
-      token,
-      user: {
-        email: user.email,
-        first_name: user.first_name,
-        user_type: user.user_type // admin | user | rider
-      }
-    });
-
-  } catch (err) {
-    console.error("Login Error:", err);
-    return res.status(500).json({ status: "error" });
+    if (!user.is_verified)
+      return res.json({ status: "email_not_verified" });
   }
-});
 
+  const token = jwt.sign(
+    { userId: user._id, role: user.user_type },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+
+  res.json({ status: "login_success", token, user });
+});
 
 /* ================= DONATE ================= */
 app.post("/donate", async (req, res) => {
-  const {
-    donor_email,
-    donor_name,
-    item_type,
-    item_name,
-    quantity,
-    price_type,
-    price_amount,
-    pickup_location,
-    remarks
-  } = req.body;
-
-  if (
-    !donor_email ||
-    !donor_name ||
-    !item_type ||
-    !item_name ||
-    !quantity ||
-    !price_type ||
-    !pickup_location
-  ) {
-    return res.json({ status: "missing_fields" });
-  }
-
-  let finalPrice = 0;
-  if (price_type === "paid") {
-    if (!price_amount || price_amount <= 0) {
-      return res.json({ status: "invalid_price" });
-    }
-    finalPrice = Number(price_amount);
-  }
-
   const otp = generateOTP();
 
   const donation = await Donation.create({
-    donor_email,
-    donor_name,
-    item_type,
-    item_name,
-    quantity,
-    price_type,
-    price_amount: finalPrice,
-    pickup_location,
-    remarks,
+    ...req.body,
     otp,
     otp_expiry: new Date(Date.now() + 10 * 60 * 1000)
   });
 
-  await sendOTP(donor_email, otp);
-
+  await sendOTP(req.body.donor_email, otp);
   res.json({ status: "otp_sent", donation_id: donation._id });
-});
-
-/* ================= RIDER PICKUP (LOCK) ================= */
-app.post("/rider/pickup", async (req, res) => {
-  const { donation_id, rider_email } = req.body;
-
-  const donation = await Donation.findById(donation_id);
-  if (!donation) return res.json({ status: "not_found" });
-
-  if (donation.donation_status !== "not_picked") {
-    return res.json({ status: "already_taken" });
-  }
-
-  donation.rider_email = rider_email;
-  donation.donation_status = "picked";
-  donation.picked_at = new Date();
-
-  await donation.save();
-  res.json({ status: "pickup_locked", donation });
 });
 
 /* ================= VERIFY DONATION OTP ================= */
 app.post("/verify-donate-otp", async (req, res) => {
-  const { donation_id, otp, rider_email } = req.body;
-
+  const { donation_id, otp } = req.body;
   const donation = await Donation.findById(donation_id);
+
   if (!donation) return res.json({ status: "not_found" });
-
-  if (donation.is_verified) {
-    return res.json({ status: "already_verified" });
-  }
-
-  if (donation.otp !== otp) {
-    return res.json({ status: "invalid_otp" });
-  }
+  if (donation.otp !== otp) return res.json({ status: "invalid_otp" });
 
   donation.is_verified = true;
-  donation.rider_email = rider_email;
   donation.otp = null;
   donation.otp_expiry = null;
-
   await donation.save();
-  res.json({ status: "donation_verified_and_picked" });
+
+  res.json({ status: "donation_verified" });
 });
 
-/* ================= REJECT PICKUP ================= */
+/* ================= RIDER APIs ================= */
+app.post("/rider/pickup", async (req, res) => {
+  const donation = await Donation.findById(req.body.donation_id);
+  if (!donation) return res.json({ status: "not_found" });
+
+  donation.rider_email = req.body.rider_email;
+  donation.donation_status = "picked";
+  await donation.save();
+
+  res.json({ status: "pickup_locked" });
+});
+
 app.post("/rider/reject-pickup", async (req, res) => {
-  const { donation_id, rider_email, reason } = req.body;
-
-  const donation = await Donation.findOne({
-    _id: donation_id,
-    rider_email
-  });
-
-  if (!donation) {
-    return res.json({ status: "invalid_request" });
-  }
-
+  const donation = await Donation.findById(req.body.donation_id);
   donation.donation_status = "not_picked";
   donation.rider_email = null;
-  donation.rejection_reason = reason;
-
+  donation.rejection_reason = req.body.reason;
   await donation.save();
+
   res.json({ status: "pickup_rejected" });
 });
 
-/* ================= MARK DELIVERED ================= */
 app.post("/rider/mark-delivered", async (req, res) => {
-  const { donation_id, rider_email } = req.body;
-
-  const donation = await Donation.findOne({
-    _id: donation_id,
-    rider_email,
-    donation_status: "picked"
-  });
-
-  if (!donation) return res.json({ status: "invalid_request" });
-
+  const donation = await Donation.findById(req.body.donation_id);
   donation.donation_status = "delivered";
-  donation.delivered_at = new Date();
   await donation.save();
 
   res.json({ status: "delivered_success" });
 });
 
-/* ================= MY RIDES ================= */
 app.post("/rider/my-rides", async (req, res) => {
-  const { rider_email } = req.body;
-
-  const rides = await Donation.find({
-    rider_email,
-    donation_status: { $in: ["picked", "delivered"] }
-  }).sort({ updatedAt: -1 });
-
+  const rides = await Donation.find({ rider_email: req.body.rider_email });
   res.json({ status: "success", rides });
 });
 
-/* ================= AVAILABLE PICKUPS ================= */
 app.post("/rider/available-pickups", async (req, res) => {
-  const donations = await Donation.find({
-    donation_status: "not_picked"
-  }).sort({ createdAt: -1 });
-
+  const donations = await Donation.find({ donation_status: "not_picked" });
   res.json({ status: "success", donations });
 });
 
-/* ================= GET USER BY EMAIL ================= */
+/* ================= USER PROFILE ================= */
 app.post("/get-user-by-email", async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.json({ status: "email_required" });
-    }
-
-    const user = await User.findOne({ email }).select(
-      "-password -otp -otp_expiry"
-    );
-
-    if (!user) {
-      return res.json({ status: "not_found" });
-    }
-
-    res.json({
-      status: "success",
-      user
-    });
-  } catch (err) {
-    console.error("Get User Error:", err);
-    res.status(500).json({ status: "error" });
-  }
+  const user = await User.findOne({ email: req.body.email }).select("-password");
+  res.json({ status: "success", user });
 });
-/* ================= UPDATE USER PROFILE BY EMAIL ================= */
+
 app.put("/update-profile", async (req, res) => {
-  try {
-    const { email, first_name, last_name, phone } = req.body;
-
-    if (!email) {
-      return res.json({ status: "email_required" });
-    }
-
-    const updateData = {};
-
-    if (first_name) updateData.first_name = first_name;
-    if (last_name) updateData.last_name = last_name;
-    if (phone) updateData.phone = phone;
-
-    if (Object.keys(updateData).length === 0) {
-      return res.json({ status: "nothing_to_update" });
-    }
-
-    const user = await User.findOneAndUpdate(
-      { email },
-      { $set: updateData },
-      { new: true }
-    ).select("-password -otp -otp_expiry");
-
-    if (!user) {
-      return res.json({ status: "not_found" });
-    }
-
-    res.json({
-      status: "updated_successfully",
-      user
-    });
-  } catch (err) {
-    console.error("Update Profile Error:", err);
-    res.status(500).json({ status: "error" });
-  }
+  const user = await User.findOneAndUpdate(
+    { email: req.body.email },
+    { $set: req.body },
+    { new: true }
+  );
+  res.json({ status: "updated_successfully", user });
 });
 
-/* ================= MY REQUESTS (USER SIDE) ================= */
+/* ================= MY REQUESTS ================= */
 app.post("/my-requests", async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.json({ status: "email_required" });
-    }
-
-    const requests = await Donation.find({ donor_email: email })
-      .sort({ createdAt: -1 }) // latest first
-      .select(
-        "item_type item_name quantity donation_status createdAt"
-      );
-
-    return res.json({
-      status: "success",
-      requests
-    });
-
-  } catch (err) {
-    console.error("My Requests Error:", err);
-    return res.status(500).json({
-      status: "error",
-      message: err.message
-    });
-  }
+  const requests = await Donation.find({ donor_email: req.body.email });
+  res.json({ status: "success", requests });
 });
 
-// ---------------Advertisements --------------------------
-
+/* ================= ADMIN ================= */
 app.post("/admin/add-advertisement", async (req, res) => {
-  try {
-    const { title, description, company_name, amount_paid } = req.body;
-
-    if (!title || !description || !company_name || !amount_paid) {
-      return res.json({ status: "missing_fields" });
-    }
-
-    const ad = await Advertisement.create({
-      title,
-      description,
-      company_name,
-      amount_paid,
-      is_active: true
-    });
-
-    res.json({ status: "advertisement_added", ad });
-  } catch (err) {
-    console.error("ADD AD ERROR:", err);
-    res.status(500).json({ status: "error" });
-  }
+  const ad = await Advertisement.create(req.body);
+  res.json({ status: "advertisement_added", ad });
 });
 
 app.get("/admin/overview", async (req, res) => {
-  try {
-    const totalUsers = await User.countDocuments({ user_type: "user" });
-    const totalRiders = await User.countDocuments({ user_type: "rider" });
+  const totalUsers = await User.countDocuments({ user_type: "user" });
+  const totalRiders = await User.countDocuments({ user_type: "rider" });
+  const delivered = await Donation.countDocuments({ donation_status: "delivered" });
 
-    const delivered = await Donation.countDocuments({
-      donation_status: "delivered"
-    });
-
-    const rejected = await Donation.countDocuments({
-      rejection_reason: { $exists: true }
-    });
-
-    const activeAds = await Advertisement.countDocuments({
-      $or: [{ is_active: true }, { is_active: { $exists: false } }]
-    });
-
-    res.json({
-      status: "success",
-      totalUsers,
-      totalRiders,
-      delivered,
-      rejected,
-      activeAds
-    });
-  } catch (err) {
-    console.error("ADMIN OVERVIEW ERROR:", err);
-    res.status(500).json({ status: "error" });
-  }
+  res.json({ status: "success", totalUsers, totalRiders, delivered });
 });
 
 app.get("/advertisements", async (req, res) => {
-  try {
-    const ads = await Advertisement.find({
-      $or: [{ is_active: true }, { is_active: { $exists: false } }]
-    }).sort({ createdAt: -1 });
-
-    res.json({ status: "success", ads });
-  } catch (err) {
-    res.status(500).json({ status: "error" });
-  }
+  const ads = await Advertisement.find();
+  res.json({ status: "success", ads });
 });
-
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
