@@ -380,6 +380,102 @@ app.get("/admin/job-applications", async (req, res) => {
   const applications = await JobApplication.find().sort({ createdAt: -1 });
   res.json({ status: "success", applications });
 });
+
+
+const sendInterviewEmail = async ({
+  to,
+  name,
+  role,
+  date,
+  time,
+  mode,
+  location
+}) => {
+  try {
+    await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      {
+        sender: {
+          name: "DWJD Recruitment",
+          email: "naveengit01@gmail.com"
+        },
+        to: [{ email: to }],
+        subject: "Interview Invitation – DWJD",
+        htmlContent: `
+          <div style="font-family: Arial, sans-serif; line-height:1.6">
+            <h2 style="color:#10b981">DWJD – Interview Invitation</h2>
+
+            <p>Dear <strong>${name}</strong>,</p>
+
+            <p>
+              Thank you for applying for the position of
+              <strong>${role}</strong> at DWJD.
+            </p>
+
+            <p>
+              We were impressed with your profile and would like to invite you
+              for an interview.
+            </p>
+
+            <p><strong>Interview Details:</strong></p>
+            <ul>
+              <li><strong>Date:</strong> ${date}</li>
+              <li><strong>Time:</strong> ${time}</li>
+              <li><strong>Mode:</strong> ${mode}</li>
+              <li><strong>Location / Link:</strong> ${location}</li>
+            </ul>
+
+            <p>Please reply to this email to confirm your availability.</p>
+
+            <p>
+              Regards,<br />
+              <strong>DWJD Recruitment Team</strong>
+            </p>
+          </div>
+        `
+      },
+      {
+        headers: {
+          "api-key": process.env.BREVO_API_KEY,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    console.log("✅ Interview email sent");
+  } catch (err) {
+    console.error("❌ Interview email error:", err.response?.data || err.message);
+  }
+};
+
+app.post("/admin/send-interview-email", async (req, res) => {
+  const {
+    email,
+    name,
+    role,
+    date,
+    time,
+    mode,
+    location
+  } = req.body;
+
+  if (!email || !name || !role || !date || !time || !mode || !location) {
+    return res.json({ status: "missing_fields" });
+  }
+
+  await sendInterviewEmail({
+    to: email,
+    name,
+    role,
+    date,
+    time,
+    mode,
+    location
+  });
+
+  res.json({ status: "interview_email_sent" });
+});
+
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
