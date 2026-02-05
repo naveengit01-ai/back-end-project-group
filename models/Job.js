@@ -1,16 +1,14 @@
-// models/Job.js
 const mongoose = require("mongoose");
 
-const jobSchema = new mongoose.Schema(
+const JobSchema = new mongoose.Schema(
   {
     title: String,
-    role_type: String, // Volunteer / Rider / Admin / NGO / Tech
     description: String,
     location: String,
-    eligibility: String,
+    role_type: String,
     is_active: { type: Boolean, default: true }
   },
   { timestamps: true }
 );
 
-module.exports = mongoose.model("Job", jobSchema);
+module.exports = mongoose.model("Job", JobSchema);
