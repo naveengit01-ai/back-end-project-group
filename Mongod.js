@@ -28,10 +28,13 @@ mongoose
     process.exit(1);
   });
 
-/* ================= EMAIL (BREVO) ================= */
+/* ================= UTILITIES ================= */
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
+/* ================= EMAIL HELPERS ================= */
+
+/* OTP EMAIL */
 const sendOTP = async (email, otp) => {
   try {
     await axios.post(
@@ -39,11 +42,14 @@ const sendOTP = async (email, otp) => {
       {
         sender: { name: "DWJD", email: "naveengit01@gmail.com" },
         to: [{ email }],
-        subject: "Your DWJD OTP",
+        subject: "DWJD Email Verification",
         htmlContent: `
-          <h2>DWJD Verification</h2>
-          <h1>${otp}</h1>
-          <p>Valid for 10 minutes</p>
+          <div style="font-family:Arial">
+            <h2>DWJD Verification</h2>
+            <p>Your OTP:</p>
+            <h1 style="letter-spacing:4px">${otp}</h1>
+            <p>Valid for 10 minutes</p>
+          </div>
         `
       },
       {
@@ -58,7 +64,116 @@ const sendOTP = async (email, otp) => {
   }
 };
 
-/* ================= SIGNUP ================= */
+/* INTERVIEW ACCEPT EMAIL */
+const sendInterviewAcceptEmail = async ({
+  to,
+  candidateName,
+  jobTitle,
+  date,
+  time,
+  mode,
+  location
+}) => {
+  await axios.post(
+    "https://api.brevo.com/v3/smtp/email",
+    {
+      sender: {
+        name: "DWJD Recruitment Team",
+        email: "naveengit01@gmail.com"
+      },
+      to: [{ email: to }],
+      subject: `Interview Invitation – ${jobTitle}`,
+      htmlContent: `
+        <div style="font-family:Arial;line-height:1.6">
+          <h2 style="color:#10b981">DWJD Interview Invitation</h2>
+
+          <p>Dear <strong>${candidateName}</strong>,</p>
+
+          <p>
+            We are pleased to inform you that you have been
+            <strong>shortlisted</strong> for the position of
+            <strong>${jobTitle}</strong>.
+          </p>
+
+          <p><b>Interview Details:</b></p>
+          <ul>
+            <li><b>Date:</b> ${date}</li>
+            <li><b>Time:</b> ${time}</li>
+            <li><b>Mode:</b> ${mode}</li>
+            <li><b>Location / Link:</b> ${location}</li>
+          </ul>
+
+          <p>Please reply to this email to confirm your availability.</p>
+
+          <p>
+            Regards,<br/>
+            <strong>DWJD Recruitment Team</strong>
+          </p>
+        </div>
+      `
+    },
+    {
+      headers: {
+        "api-key": process.env.BREVO_API_KEY,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+};
+
+/* INTERVIEW REJECT EMAIL */
+const sendInterviewRejectEmail = async ({
+  to,
+  candidateName,
+  jobTitle
+}) => {
+  await axios.post(
+    "https://api.brevo.com/v3/smtp/email",
+    {
+      sender: {
+        name: "DWJD Recruitment Team",
+        email: "naveengit01@gmail.com"
+      },
+      to: [{ email: to }],
+      subject: `Application Update – ${jobTitle}`,
+      htmlContent: `
+        <div style="font-family:Arial;line-height:1.6">
+          <h2 style="color:#ef4444">DWJD Application Update</h2>
+
+          <p>Dear <strong>${candidateName}</strong>,</p>
+
+          <p>
+            Thank you for applying for the position of
+            <strong>${jobTitle}</strong> at DWJD.
+          </p>
+
+          <p>
+            After careful consideration, we regret to inform you that
+            we will not be moving forward with your application at this time.
+          </p>
+
+          <p>
+            We truly appreciate your interest in DWJD and encourage you
+            to apply again in the future.
+          </p>
+
+          <p>
+            Regards,<br/>
+            <strong>DWJD Recruitment Team</strong>
+          </p>
+        </div>
+      `
+    },
+    {
+      headers: {
+        "api-key": process.env.BREVO_API_KEY,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+};
+
+/* ================= AUTH ================= */
 app.post("/signup", async (req, res) => {
   try {
     const {
@@ -74,8 +189,8 @@ app.post("/signup", async (req, res) => {
       longitude
     } = req.body;
 
-    if (!username || !first_name || !last_name || !phone || !email ||
-        !user_type || !password || !confirm_password)
+    if (!username || !first_name || !last_name || !phone ||
+        !email || !user_type || !password || !confirm_password)
       return res.json({ status: "missing_fields" });
 
     if (password !== confirm_password)
@@ -112,9 +227,6 @@ app.post("/signup", async (req, res) => {
     };
 
     if (user_type === "rider") {
-      if (!latitude || !longitude)
-        return res.json({ status: "location_required" });
-
       userData.rider_location = {
         lat: Number(latitude),
         lng: Number(longitude)
@@ -126,19 +238,16 @@ app.post("/signup", async (req, res) => {
 
     res.json({ status: "signup_success_otp_sent" });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ status: "error" });
   }
 });
 
-/* ================= VERIFY OTP ================= */
 app.post("/verify-otp", async (req, res) => {
   const { email, otp } = req.body;
   const user = await User.findOne({ email });
 
   if (!user) return res.json({ status: "not_found" });
   if (user.is_verified) return res.json({ status: "already_verified" });
-  if (Date.now() > user.otp_expiry) return res.json({ status: "otp_expired" });
   if (user.otp !== otp) return res.json({ status: "invalid_otp" });
 
   user.is_verified = true;
@@ -149,7 +258,6 @@ app.post("/verify-otp", async (req, res) => {
   res.json({ status: "account_verified" });
 });
 
-/* ================= LOGIN ================= */
 app.post("/login", async (req, res) => {
   const { email, password, user_type } = req.body;
   const user = await User.findOne({ email });
@@ -160,14 +268,12 @@ app.post("/login", async (req, res) => {
   if (!match) return res.json({ status: "invalid_credentials" });
 
   if (user.user_type !== "admin") {
-    if (user.user_type !== user_type)
+    if (!user.is_verified || user.user_type !== user_type)
       return res.json({ status: "invalid_credentials" });
-    if (!user.is_verified)
-      return res.json({ status: "email_not_verified" });
   }
 
   const token = jwt.sign(
-    { userId: user._id, role: user.user_type },
+    { id: user._id, role: user.user_type },
     process.env.JWT_SECRET,
     { expiresIn: "7d" }
   );
@@ -175,61 +281,7 @@ app.post("/login", async (req, res) => {
   res.json({ status: "login_success", token, user });
 });
 
-/* ================= DONATION ================= */
-app.post("/donate", async (req, res) => {
-  const otp = generateOTP();
-  const donation = await Donation.create({
-    ...req.body,
-    otp,
-    otp_expiry: new Date(Date.now() + 10 * 60 * 1000)
-  });
-
-  await sendOTP(req.body.donor_email, otp);
-  res.json({ status: "otp_sent", donation_id: donation._id });
-});
-
-app.post("/verify-donate-otp", async (req, res) => {
-  const donation = await Donation.findById(req.body.donation_id);
-  if (!donation) return res.json({ status: "not_found" });
-  if (donation.otp !== req.body.otp)
-    return res.json({ status: "invalid_otp" });
-
-  donation.is_verified = true;
-  donation.otp = null;
-  donation.otp_expiry = null;
-  await donation.save();
-
-  res.json({ status: "donation_verified" });
-});
-
-/* ================= RIDER ================= */
-app.post("/rider/pickup", async (req, res) => {
-  const donation = await Donation.findById(req.body.donation_id);
-  donation.rider_email = req.body.rider_email;
-  donation.donation_status = "picked";
-  await donation.save();
-  res.json({ status: "pickup_locked" });
-});
-
-app.post("/rider/mark-delivered", async (req, res) => {
-  const donation = await Donation.findById(req.body.donation_id);
-  donation.donation_status = "delivered";
-  await donation.save();
-  res.json({ status: "delivered_success" });
-});
-
-/* ================= ADS ================= */
-app.post("/admin/add-advertisement", async (req, res) => {
-  const ad = await Advertisement.create(req.body);
-  res.json({ status: "advertisement_added", ad });
-});
-
-app.get("/advertisements", async (req, res) => {
-  const ads = await Advertisement.find();
-  res.json({ status: "success", ads });
-});
-
-/* ================= CAREER / JOB ================= */
+/* ================= JOBS ================= */
 app.post("/admin/add-job", async (req, res) => {
   const job = await Job.create(req.body);
   res.json({ status: "job_added", job });
@@ -258,43 +310,45 @@ app.post("/apply-job", async (req, res) => {
   res.json({ status: "application_submitted" });
 });
 
-/* ================= ADMIN JOB NOTIFICATIONS ================= */
 app.get("/admin/job-applications", async (req, res) => {
-  const applications = await JobApplication.find()
-    .sort({ createdAt: -1 });
+  const applications = await JobApplication.find().sort({ createdAt: -1 });
   res.json({ status: "success", applications });
 });
 
-/* ================= INTERVIEW EMAIL ================= */
-const sendInterviewEmail = async ({ to, name, role }) => {
-  await axios.post(
-    "https://api.brevo.com/v3/smtp/email",
-    {
-      sender: { name: "DWJD HR", email: "naveengit01@gmail.com" },
-      to: [{ email: to }],
-      subject: "Interview Call – DWJD",
-      htmlContent: `
-        <p>Dear ${name},</p>
-        <p>You are shortlisted for <b>${role}</b>.</p>
-        <p>DWJD Recruitment Team</p>
-      `
-    },
-    { headers: { "api-key": process.env.BREVO_API_KEY } }
-  );
-};
-
+/* ================= ACCEPT ================= */
 app.post("/admin/job-application/accept", async (req, res) => {
   const appData = await JobApplication.findById(req.body.application_id);
+
   appData.status = "accepted";
   await appData.save();
 
-  await sendInterviewEmail({
+  await sendInterviewAcceptEmail({
     to: appData.email,
-    name: appData.first_name,
-    role: appData.job_title
+    candidateName: appData.first_name,
+    jobTitle: appData.job_title,
+    date: req.body.date,
+    time: req.body.time,
+    mode: req.body.mode,
+    location: req.body.location
   });
 
   res.json({ status: "accepted" });
+});
+
+/* ================= REJECT ================= */
+app.post("/admin/job-application/reject", async (req, res) => {
+  const appData = await JobApplication.findById(req.body.application_id);
+
+  appData.status = "rejected";
+  await appData.save();
+
+  await sendInterviewRejectEmail({
+    to: appData.email,
+    candidateName: appData.first_name,
+    jobTitle: appData.job_title
+  });
+
+  res.json({ status: "rejected" });
 });
 
 /* ================= START ================= */
