@@ -9,6 +9,9 @@ const axios = require("axios");
 const User = require("./models/User");
 const Donation = require("./models/Donation");
 const Advertisement = require("./models/Advertisement");
+const Job = require("./models/Job");
+const JobApplication = require("./models/JobApplication");
+const Notification = require("./models/Notification");
 
 const app = express();
 
@@ -326,7 +329,57 @@ app.post("/resend-otp", async (req, res) => {
     res.status(500).json({ status: "error" });
   }
 });
+app.post("/admin/add-job", async (req, res) => {
+  const job = await Job.create(req.body);
+  res.json({ status: "job_added", job });
+});
+app.get("/jobs", async (req, res) => {
+  const jobs = await Job.find({ is_active: true });
+  res.json({ status: "success", jobs });
+});
+app.post("/apply-job", async (req, res) => {
+  const {
+    job_id,
+    first_name,
+    last_name,
+    email,
+    phone,
+    location,
+    resume_link,
+    message
+  } = req.body;
 
+  const job = await Job.findById(job_id);
+  if (!job) return res.json({ status: "job_not_found" });
+
+  const application = await JobApplication.create({
+    job_id,
+    job_title: job.title,
+    first_name,
+    last_name,
+    email,
+    phone,
+    location,
+    resume_link,
+    message
+  });
+
+  await Notification.create({
+    type: "job_application",
+    message: `New application for ${job.title}`,
+    related_id: application._id
+  });
+
+  res.json({ status: "application_submitted" });
+});
+app.get("/admin/notifications", async (req, res) => {
+  const notifications = await Notification.find().sort({ createdAt: -1 });
+  res.json({ status: "success", notifications });
+});
+app.get("/admin/job-applications", async (req, res) => {
+  const applications = await JobApplication.find().sort({ createdAt: -1 });
+  res.json({ status: "success", applications });
+});
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
