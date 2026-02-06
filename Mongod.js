@@ -470,6 +470,65 @@ app.post("/rider/my-rides", async (req, res) => {
   }
 });
 
+/* =================================================
+   RESEND DONATION OTP
+================================================= */
+
+app.post("/resend-donate-otp", async (req, res) => {
+  try {
+    const { donation_id } = req.body;
+
+    if (!donation_id) {
+      return res.json({ status: "missing_fields" });
+    }
+
+    const donation = await Donation.findById(donation_id);
+    if (!donation) {
+      return res.json({ status: "not_found" });
+    }
+
+    // Generate new OTP
+    const otp = generateOTP();
+
+    donation.otp = otp;
+    donation.otp_expiry = new Date(Date.now() + 10 * 60 * 1000);
+    await donation.save();
+
+    // Send OTP again
+    await sendOTP(donation.donor_email, otp);
+
+    res.json({ status: "otp_resent" });
+  } catch (err) {
+    console.error("Resend OTP error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+app.post("/verify-donate-otp", async (req, res) => {
+  const { donation_id, otp, rider_email } = req.body;
+
+  const donation = await Donation.findById(donation_id);
+  if (!donation) return res.json({ status: "not_found" });
+
+  if (donation.otp !== otp) {
+    return res.json({ status: "invalid_otp" });
+  }
+
+  donation.is_verified = true;
+  donation.otp = null;
+  donation.otp_expiry = null;
+
+  // lock pickup
+  if (rider_email) {
+    donation.rider_email = rider_email;
+    donation.donation_status = "picked";
+  }
+
+  await donation.save();
+
+  res.json({ status: "donation_verified_and_picked" });
+});
+
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
