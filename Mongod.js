@@ -424,6 +424,27 @@ app.post("/rider/available-pickups", async (req, res) => {
   res.json({ status: "success", donations });
 });
 
+app.post("/admin/add-advertisement", async (req, res) => {
+  try {
+    const ad = await Advertisement.create(req.body);
+    res.json({ status: "advertisement_added", ad });
+  } catch (err) {
+    console.error("Add advertisement error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+app.get("/advertisements", async (req, res) => {
+  try {
+    const ads = await Advertisement.find().sort({ createdAt: -1 });
+    res.json({ status: "success", ads });
+  } catch (err) {
+    console.error("Fetch ads error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
