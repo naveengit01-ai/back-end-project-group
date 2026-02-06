@@ -351,6 +351,196 @@ app.post("/admin/job-application/reject", async (req, res) => {
   res.json({ status: "rejected" });
 });
 
+
+// ______________________________________________ //
+
+app.post("/admin/interview/accept", async (req, res) => {
+  try {
+    const {
+      application_id,
+      interview_date,
+      interview_time,
+      mode,
+      location
+    } = req.body;
+
+    if (!application_id || !interview_date || !interview_time || !mode || !location) {
+      return res.json({ status: "missing_fields" });
+    }
+
+    const appData = await JobApplication.findById(application_id);
+    if (!appData) return res.json({ status: "application_not_found" });
+
+    appData.status = "interview_scheduled";
+    await appData.save();
+
+    await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      {
+        sender: {
+          name: "DWJD Recruitment Team",
+          email: "naveengit01@gmail.com"
+        },
+        to: [{ email: appData.email }],
+        subject: "DWJD Interview Invitation",
+        htmlContent: `
+          <div style="font-family:Arial; line-height:1.6">
+            <h2>DWJD Interview Invitation</h2>
+
+            <p>Dear <strong>${appData.first_name}</strong>,</p>
+
+            <p>
+              You have been shortlisted for the position of
+              <strong>${appData.job_title}</strong>.
+            </p>
+
+            <p><strong>Interview Details:</strong></p>
+            <ul>
+              <li>Date: ${interview_date}</li>
+              <li>Time: ${interview_time}</li>
+              <li>Mode: ${mode}</li>
+              <li>Location / Link: ${location}</li>
+            </ul>
+
+            <p>Please reply to this email to confirm your availability.</p>
+
+            <p>Regards,<br/>DWJD Recruitment Team</p>
+          </div>
+        `
+      },
+      {
+        headers: {
+          "api-key": process.env.BREVO_API_KEY,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    res.json({ status: "interview_email_sent" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+// ______________________________________________________ //
+
+app.post("/admin/interview/reject", async (req, res) => {
+  try {
+    const { application_id, reason } = req.body;
+
+    if (!application_id) {
+      return res.json({ status: "missing_fields" });
+    }
+
+    const appData = await JobApplication.findById(application_id);
+    if (!appData) return res.json({ status: "application_not_found" });
+
+    appData.status = "rejected";
+    await appData.save();
+
+    await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      {
+        sender: {
+          name: "DWJD Recruitment Team",
+          email: "naveengit01@gmail.com"
+        },
+        to: [{ email: appData.email }],
+        subject: "DWJD Interview Update",
+        htmlContent: `
+          <div style="font-family:Arial; line-height:1.6">
+            <p>Dear <strong>${appData.first_name}</strong>,</p>
+
+            <p>
+              Thank you for your interest in the position of
+              <strong>${appData.job_title}</strong> at DWJD.
+            </p>
+
+            <p>
+              After careful consideration, we regret to inform you that
+              we will not be moving forward at this time.
+            </p>
+
+            <p>
+              We appreciate your effort and encourage you to apply again
+              in the future.
+            </p>
+
+            <p>Regards,<br/>DWJD Recruitment Team</p>
+          </div>
+        `
+      },
+      {
+        headers: {
+          "api-key": process.env.BREVO_API_KEY,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    res.json({ status: "rejection_email_sent" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+// _____________________________________________ //
+
+app.post("/admin/interview/select", async (req, res) => {
+  try {
+    const {
+      application_id,
+      username,
+      password,
+      user_type
+    } = req.body;
+
+    if (!application_id || !username || !password || !user_type) {
+      return res.json({ status: "missing_fields" });
+    }
+
+    const appData = await JobApplication.findById(application_id);
+    if (!appData) return res.json({ status: "application_not_found" });
+
+    const existingUser = await User.findOne({ email: appData.email });
+    if (existingUser) {
+      return res.json({ status: "user_already_exists" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const otp = generateOTP();
+
+    await User.create({
+      username,
+      first_name: appData.first_name,
+      last_name: appData.last_name,
+      phone: appData.phone,
+      email: appData.email,
+      user_type,
+      password: hashedPassword,
+      otp,
+      otp_expiry: new Date(Date.now() + 10 * 60 * 1000),
+      is_verified: false
+    });
+
+    appData.status = "selected";
+    await appData.save();
+
+    await sendOTP(appData.email, otp);
+
+    res.json({ status: "account_created_otp_sent" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
