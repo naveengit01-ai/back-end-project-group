@@ -660,43 +660,46 @@ app.post("/admin/interview/not-selected", async (req, res) => {
 
 app.post("/admin/create-employee", async (req, res) => {
   try {
-    const {
-      application_id,
-      username,
-      password,
-      user_type
-    } = req.body;
+    const { application_id, username, password } = req.body;
 
+    if (!application_id || !username || !password) {
+      return res.json({ status: "missing_fields" });
+    }
+
+    /* 🔍 FETCH APPLICATION */
     const application = await JobApplication.findById(application_id);
     if (!application) {
       return res.json({ status: "application_not_found" });
     }
 
+    /* 🎯 ROLE MUST COME FROM JOB APPLIED */
+    const user_type = application.job_title.toLowerCase(); // 🔥 FIX
+
     const hashedPassword = await bcrypt.hash(password, 10);
     const otp = generateOTP();
 
-    // 🔍 CHECK IF USER ALREADY EXISTS
+    /* 🔍 CHECK IF USER ALREADY EXISTS */
     let user = await User.findOne({ email: application.email });
 
     if (user) {
-      // ✅ UPDATE EXISTING USER
+      /* ✅ UPDATE EXISTING USER */
       user.username = username;
       user.user_type = user_type;
       user.password = hashedPassword;
-      user.is_verified = false;
+      user.is_verified = false; // force OTP again
       user.otp = otp;
       user.otp_expiry = new Date(Date.now() + 10 * 60 * 1000);
 
       await user.save();
     } else {
-      // ✅ CREATE NEW USER
+      /* ✅ CREATE NEW USER */
       await User.create({
         username,
         first_name: application.first_name,
         last_name: application.last_name,
         email: application.email,
         phone: application.phone,
-        user_type,
+        user_type, // 🔥 derived, not sent
         password: hashedPassword,
         is_verified: false,
         otp,
@@ -704,11 +707,11 @@ app.post("/admin/create-employee", async (req, res) => {
       });
     }
 
-    // ✅ MARK APPLICATION AS SELECTED
+    /* ✅ MARK APPLICATION AS SELECTED */
     application.status = "selected";
     await application.save();
 
-    // 📩 SEND OTP
+    /* 📩 SEND OTP */
     await sendOTP(application.email, otp);
 
     res.json({ status: "employee_created_otp_sent" });
