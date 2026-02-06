@@ -672,23 +672,23 @@ app.post("/admin/create-employee", async (req, res) => {
       return res.json({ status: "application_not_found" });
     }
 
-    /* 🎯 ROLE FROM JOB APPLIED */
+    /* 🎯 ROLE = JOB APPLIED */
     const user_type = application.job_title.toLowerCase();
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    /* 🔍 CHECK EXISTING USER */
+    /* 🔍 CHECK IF USER EXISTS */
     let user = await User.findOne({ email: application.email });
 
     if (user) {
-      /* ✅ UPDATE USER */
+      /* ✅ UPDATE EXISTING USER */
       user.username = username;
       user.user_type = user_type;
       user.password = hashedPassword;
-      user.is_verified = true; // 🔥 DIRECT ACCESS
+      user.is_verified = true; // direct access
       await user.save();
     } else {
-      /* ✅ CREATE USER */
+      /* ✅ CREATE NEW USER */
       await User.create({
         username,
         first_name: application.first_name,
@@ -705,46 +705,47 @@ app.post("/admin/create-employee", async (req, res) => {
     application.status = "selected";
     await application.save();
 
-    /* 📩 SEND SELECTION EMAIL (PASSWORD INCLUDED) */
-    await sendEmail({
-      to: application.email,
-      subject: "🎉 Congratulations! You Are Selected – DWJD",
-      html: `
-        <h2>Congratulations ${application.first_name}! 🎉</h2>
+    /* 📩 SEND SELECTION + PASSWORD EMAIL */
+    try {
+      await sendEmail({
+        to: application.email,
+        subject: "🎉 Congratulations! You Are Selected – DWJD",
+        html: `
+          <h2>Congratulations ${application.first_name}! 🎉</h2>
 
-        <p>
-          We are happy to inform you that you have been
-          <b style="color:green;">SELECTED</b> for the role of
-          <b>${application.job_title}</b> at <b>DWJD</b>.
-        </p>
+          <p>
+            You have been <b style="color:green;">SELECTED</b> for the role of
+            <b>${application.job_title}</b> at <b>DWJD</b>.
+          </p>
 
-        <hr/>
+          <hr/>
 
-        <h3>🔐 Login Credentials</h3>
-        <p>
-          <b>Email:</b> ${application.email}<br/>
-          <b>Password:</b>
-          <span style="font-size:18px; font-weight:bold; color:#000;">
-            ${password}
-          </span>
-        </p>
+          <h3>🔐 Login Credentials</h3>
+          <p>
+            <b>Email:</b> ${application.email}<br/>
+            <b>Password:</b>
+            <span style="font-size:18px;font-weight:bold;">
+              ${password}
+            </span>
+          </p>
 
-        <p>
-          👉 Please login and change your password after first login.
-        </p>
+          <p>Please login and change your password after first login.</p>
 
-        <hr/>
+          <hr/>
 
-        <p>
-          If you face any issues, contact us at:
-          <br/>
-          📧 <b>support@dwjd.org</b>
-        </p>
+          <p>
+            If you face any issues, contact us at<br/>
+            📧 <b>support@dwjd.org</b>
+          </p>
 
-        <p>Welcome aboard! 🚀</p>
-        <p><b>DWJD Team</b></p>
-      `
-    });
+          <p>Welcome to the team 🚀</p>
+          <p><b>DWJD Team</b></p>
+        `
+      });
+    } catch (mailErr) {
+      console.error("❌ Selection email failed:", mailErr.message);
+      return res.json({ status: "employee_created_but_mail_failed" });
+    }
 
     res.json({ status: "employee_created_and_mail_sent" });
 
