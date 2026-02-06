@@ -672,38 +672,32 @@ app.post("/admin/create-employee", async (req, res) => {
       return res.json({ status: "application_not_found" });
     }
 
-    /* 🎯 ROLE MUST COME FROM JOB APPLIED */
-    const user_type = application.job_title.toLowerCase(); // 🔥 FIX
+    /* 🎯 ROLE FROM JOB APPLIED */
+    const user_type = application.job_title.toLowerCase();
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const otp = generateOTP();
 
-    /* 🔍 CHECK IF USER ALREADY EXISTS */
+    /* 🔍 CHECK EXISTING USER */
     let user = await User.findOne({ email: application.email });
 
     if (user) {
-      /* ✅ UPDATE EXISTING USER */
+      /* ✅ UPDATE USER */
       user.username = username;
       user.user_type = user_type;
       user.password = hashedPassword;
-      user.is_verified = false; // force OTP again
-      user.otp = otp;
-      user.otp_expiry = new Date(Date.now() + 10 * 60 * 1000);
-
+      user.is_verified = true; // 🔥 DIRECT ACCESS
       await user.save();
     } else {
-      /* ✅ CREATE NEW USER */
+      /* ✅ CREATE USER */
       await User.create({
         username,
         first_name: application.first_name,
         last_name: application.last_name,
         email: application.email,
         phone: application.phone,
-        user_type, // 🔥 derived, not sent
+        user_type,
         password: hashedPassword,
-        is_verified: false,
-        otp,
-        otp_expiry: new Date(Date.now() + 10 * 60 * 1000)
+        is_verified: true
       });
     }
 
@@ -711,10 +705,48 @@ app.post("/admin/create-employee", async (req, res) => {
     application.status = "selected";
     await application.save();
 
-    /* 📩 SEND OTP */
-    await sendOTP(application.email, otp);
+    /* 📩 SEND SELECTION EMAIL (PASSWORD INCLUDED) */
+    await sendEmail({
+      to: application.email,
+      subject: "🎉 Congratulations! You Are Selected – DWJD",
+      html: `
+        <h2>Congratulations ${application.first_name}! 🎉</h2>
 
-    res.json({ status: "employee_created_otp_sent" });
+        <p>
+          We are happy to inform you that you have been
+          <b style="color:green;">SELECTED</b> for the role of
+          <b>${application.job_title}</b> at <b>DWJD</b>.
+        </p>
+
+        <hr/>
+
+        <h3>🔐 Login Credentials</h3>
+        <p>
+          <b>Email:</b> ${application.email}<br/>
+          <b>Password:</b>
+          <span style="font-size:18px; font-weight:bold; color:#000;">
+            ${password}
+          </span>
+        </p>
+
+        <p>
+          👉 Please login and change your password after first login.
+        </p>
+
+        <hr/>
+
+        <p>
+          If you face any issues, contact us at:
+          <br/>
+          📧 <b>support@dwjd.org</b>
+        </p>
+
+        <p>Welcome aboard! 🚀</p>
+        <p><b>DWJD Team</b></p>
+      `
+    });
+
+    res.json({ status: "employee_created_and_mail_sent" });
 
   } catch (err) {
     console.error("Create employee error:", err);
