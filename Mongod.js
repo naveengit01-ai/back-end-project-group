@@ -529,6 +529,76 @@ app.post("/verify-donate-otp", async (req, res) => {
   res.json({ status: "donation_verified_and_picked" });
 });
 
+/* =================================================
+   GET USER BY EMAIL (PROFILE)
+================================================= */
+
+app.post("/get-user-by-email", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.json({ status: "missing_fields" });
+    }
+
+    const user = await User.findOne({ email }).select("-password -otp -otp_expiry");
+    if (!user) {
+      return res.json({ status: "not_found" });
+    }
+
+    res.json({ status: "success", user });
+  } catch (err) {
+    console.error("Get user error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+/* =================================================
+   UPDATE PROFILE
+================================================= */
+
+app.put("/update-profile", async (req, res) => {
+  try {
+    const { email, first_name, last_name, phone } = req.body;
+
+    if (!email) {
+      return res.json({ status: "missing_email" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.json({ status: "not_found" });
+    }
+
+    // ✅ Update only allowed fields
+    if (first_name !== undefined) user.first_name = first_name;
+    if (last_name !== undefined) user.last_name = last_name;
+    if (phone !== undefined) user.phone = phone;
+
+    await user.save();
+
+    // ❌ never send password / otp back
+    const safeUser = {
+      _id: user._id,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      email: user.email,
+      phone: user.phone,
+      user_type: user.user_type,
+      is_verified: user.is_verified
+    };
+
+    res.json({
+      status: "updated_successfully",
+      user: safeUser
+    });
+
+  } catch (err) {
+    console.error("Update profile error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
