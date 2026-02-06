@@ -173,29 +173,6 @@ app.post("/verify-otp", async (req, res) => {
   res.json({ status: "account_verified" });
 });
 
-// app.post("/login", async (req, res) => {
-//   const { email, password, user_type } = req.body;
-//   const user = await User.findOne({ email });
-
-//   if (!user) return res.json({ status: "invalid_credentials" });
-
-//   const match = await bcrypt.compare(password, user.password);
-//   if (!match) return res.json({ status: "invalid_credentials" });
-
-//   if (user.user_type !== "admin") {
-//     if (!user.is_verified || user.user_type !== user_type)
-//       return res.json({ status: "invalid_credentials" });
-//   }
-
-//   const token = jwt.sign(
-//     { id: user._id, role: user.user_type },
-//     process.env.JWT_SECRET,
-//     { expiresIn: "7d" }
-//   );
-
-//   res.json({ status: "login_success", token, user });
-// });
-
 app.post("/login", async (req, res) => {
   try {
     const { email, password, user_type } = req.body;
@@ -682,38 +659,82 @@ app.post("/admin/interview/not-selected", async (req, res) => {
 // create employe 
 
 app.post("/admin/create-employee", async (req, res) => {
-  const {
-    application_id,
-    username,
-    password,
-    user_type
-  } = req.body;
+  try {
+    const {
+      application_id,
+      username,
+      password,
+      user_type
+    } = req.body;
 
-  const appData = await JobApplication.findById(application_id);
-  if (!appData) return res.json({ status: "not_found" });
+    const application = await JobApplication.findById(application_id);
+    if (!application) {
+      return res.json({ status: "application_not_found" });
+    }
 
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const otp = generateOTP();
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const otp = generateOTP();
 
-  await User.create({
-    username,
-    first_name: appData.first_name,
-    last_name: appData.last_name,
-    email: appData.email,
-    phone: appData.phone,
-    user_type,
-    password: hashedPassword,
-    is_verified: false,
-    otp,
-    otp_expiry: new Date(Date.now() + 10 * 60 * 1000)
-  });
+    // 🔍 CHECK IF USER ALREADY EXISTS
+    let user = await User.findOne({ email: application.email });
 
-  appData.status = "selected";
-  await appData.save();
+    if (user) {
+      // ✅ UPDATE EXISTING USER
+      user.username = username;
+      user.user_type = user_type;
+      user.password = hashedPassword;
+      user.is_verified = false;
+      user.otp = otp;
+      user.otp_expiry = new Date(Date.now() + 10 * 60 * 1000);
 
-  await sendOTP(appData.email, otp);
+      await user.save();
+    } else {
+      // ✅ CREATE NEW USER
+      await User.create({
+        username,
+        first_name: application.first_name,
+        last_name: application.last_name,
+        email: application.email,
+        phone: application.phone,
+        user_type,
+        password: hashedPassword,
+        is_verified: false,
+        otp,
+        otp_expiry: new Date(Date.now() + 10 * 60 * 1000)
+      });
+    }
 
-  res.json({ status: "employee_created_otp_sent" });
+    // ✅ MARK APPLICATION AS SELECTED
+    application.status = "selected";
+    await application.save();
+
+    // 📩 SEND OTP
+    await sendOTP(application.email, otp);
+
+    res.json({ status: "employee_created_otp_sent" });
+
+  } catch (err) {
+    console.error("Create employee error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+
+// Get application by ID
+
+app.get("/admin/application/:id", async (req, res) => {
+  try {
+    const application = await JobApplication.findById(req.params.id);
+
+    if (!application) {
+      return res.json({ status: "not_found" });
+    }
+
+    res.json({ status: "success", application });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: "error" });
+  }
 });
 
 
