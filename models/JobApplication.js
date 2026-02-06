@@ -2,8 +2,16 @@ const mongoose = require("mongoose");
 
 const JobApplicationSchema = new mongoose.Schema(
   {
-    job_id: mongoose.Schema.Types.ObjectId,
-    job_title: String,
+    job_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Job",
+      required: true
+    },
+
+    job_title: {
+      type: String,
+      required: true
+    },
 
     first_name: String,
     last_name: String,
@@ -16,8 +24,20 @@ const JobApplicationSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["pending", "accepted", "rejected"],
+      enum: [
+        "pending",
+        "interview_scheduled",
+        "selected",
+        "rejected"
+      ],
       default: "pending"
+    },
+
+    interview: {
+      date: String,
+      time: String,
+      mode: String,
+      location: String
     }
   },
   { timestamps: true }
