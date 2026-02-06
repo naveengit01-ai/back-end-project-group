@@ -1,10 +1,21 @@
-POST http://localhost:5000/data
+# POST http://localhost:5000/data
+# Content-Type: application/json
+
+# {
+#     "name":"kola",
+#     "roll_no":1
+# }
+
+
+# GET http://localhost:5000/
+
+POST http://localhost:5000/admin/interview/schedule
 Content-Type: application/json
 
 {
-    "name":"kola",
-    "roll_no":1
+  "application_id": "65cfa9c8e8b3a2a7d6f0e123",
+  "date": "2026-02-10",
+  "time": "11:30 AM",
+  "mode": "Online",
+  "location": "Google Meet link"
 }
-
-
-GET http://localhost:5000/
