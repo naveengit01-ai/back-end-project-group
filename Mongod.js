@@ -599,6 +599,76 @@ app.put("/update-profile", async (req, res) => {
   }
 });
 
+//  Aplication details //
+
+app.get("/admin/application/:id", async (req, res) => {
+  const application = await JobApplication.findById(req.params.id);
+  if (!application) return res.json({ status: "not_found" });
+
+  res.json({ status: "success", application });
+});
+
+// not selected one 
+
+app.post("/admin/interview/not-selected", async (req, res) => {
+  const appData = await JobApplication.findById(req.body.application_id);
+  if (!appData) return res.json({ status: "not_found" });
+
+  appData.status = "rejected";
+  await appData.save();
+
+  await sendEmail({
+    to: appData.email,
+    subject: "Application Update – DWJD",
+    html: `
+      <p>Hi ${appData.first_name},</p>
+      <p>Thank you for applying. Unfortunately, you were not selected.</p>
+      <p>You can explore new opportunities here:</p>
+      <a href="https://dwjd.vercel.app/career">Career Page</a>
+      <p>Best wishes,<br/>DWJD Team</p>
+    `
+  });
+
+  res.json({ status: "rejection_email_sent" });
+});
+
+// create employe 
+
+app.post("/admin/create-employee", async (req, res) => {
+  const {
+    application_id,
+    username,
+    password,
+    user_type
+  } = req.body;
+
+  const appData = await JobApplication.findById(application_id);
+  if (!appData) return res.json({ status: "not_found" });
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const otp = generateOTP();
+
+  await User.create({
+    username,
+    first_name: appData.first_name,
+    last_name: appData.last_name,
+    email: appData.email,
+    phone: appData.phone,
+    user_type,
+    password: hashedPassword,
+    is_verified: false,
+    otp,
+    otp_expiry: new Date(Date.now() + 10 * 60 * 1000)
+  });
+
+  appData.status = "selected";
+  await appData.save();
+
+  await sendOTP(appData.email, otp);
+
+  res.json({ status: "employee_created_otp_sent" });
+});
+
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
