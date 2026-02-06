@@ -444,6 +444,32 @@ app.get("/advertisements", async (req, res) => {
   }
 });
 
+/* =================================================
+   RIDER → MY RIDES (USED BY MyRides.jsx)
+================================================= */
+
+app.post("/rider/my-rides", async (req, res) => {
+  try {
+    const { rider_email } = req.body;
+
+    if (!rider_email) {
+      return res.json({ status: "missing_fields" });
+    }
+
+    const rides = await Donation.find({
+      rider_email
+    }).sort({ createdAt: -1 });
+
+    res.json({
+      status: "success",
+      rides
+    });
+  } catch (err) {
+    console.error("My rides error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
