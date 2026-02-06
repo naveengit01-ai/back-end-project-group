@@ -173,28 +173,75 @@ app.post("/verify-otp", async (req, res) => {
   res.json({ status: "account_verified" });
 });
 
+// app.post("/login", async (req, res) => {
+//   const { email, password, user_type } = req.body;
+//   const user = await User.findOne({ email });
+
+//   if (!user) return res.json({ status: "invalid_credentials" });
+
+//   const match = await bcrypt.compare(password, user.password);
+//   if (!match) return res.json({ status: "invalid_credentials" });
+
+//   if (user.user_type !== "admin") {
+//     if (!user.is_verified || user.user_type !== user_type)
+//       return res.json({ status: "invalid_credentials" });
+//   }
+
+//   const token = jwt.sign(
+//     { id: user._id, role: user.user_type },
+//     process.env.JWT_SECRET,
+//     { expiresIn: "7d" }
+//   );
+
+//   res.json({ status: "login_success", token, user });
+// });
+
 app.post("/login", async (req, res) => {
-  const { email, password, user_type } = req.body;
-  const user = await User.findOne({ email });
+  try {
+    const { email, password, user_type } = req.body;
 
-  if (!user) return res.json({ status: "invalid_credentials" });
-
-  const match = await bcrypt.compare(password, user.password);
-  if (!match) return res.json({ status: "invalid_credentials" });
-
-  if (user.user_type !== "admin") {
-    if (!user.is_verified || user.user_type !== user_type)
+    const user = await User.findOne({ email });
+    if (!user) {
       return res.json({ status: "invalid_credentials" });
+    }
+
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      return res.json({ status: "invalid_credentials" });
+    }
+
+    /* 🔴 NOT VERIFIED → OTP REQUIRED */
+    if (!user.is_verified) {
+      return res.json({
+        status: "otp_required",
+        email: user.email
+      });
+    }
+
+    /* 🔐 ROLE CHECK (NON-ADMIN ONLY) */
+    if (user.user_type !== "admin" && user.user_type !== user_type) {
+      return res.json({ status: "invalid_credentials" });
+    }
+
+    /* ✅ LOGIN SUCCESS */
+    const token = jwt.sign(
+      { id: user._id, role: user.user_type },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.json({
+      status: "login_success",
+      token,
+      user
+    });
+
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ status: "error" });
   }
-
-  const token = jwt.sign(
-    { id: user._id, role: user.user_type },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" }
-  );
-
-  res.json({ status: "login_success", token, user });
 });
+
 
 /* =================================================
    DONATION + MY REQUESTS
