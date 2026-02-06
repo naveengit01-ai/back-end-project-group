@@ -236,9 +236,21 @@ app.post("/my-requests", async (req, res) => {
 ================================================= */
 
 app.post("/admin/add-job", async (req, res) => {
-  const job = await Job.create(req.body);
+  const { title, description } = req.body;
+
+  if (!title || !description) {
+    return res.json({ status: "missing_fields" });
+  }
+
+  const job = await Job.create({
+    title,
+    description,
+    is_active: true
+  });
+
   res.json({ status: "job_added", job });
 });
+
 
 app.get("/jobs", async (req, res) => {
   const jobs = await Job.find({ is_active: true });
@@ -246,22 +258,65 @@ app.get("/jobs", async (req, res) => {
 });
 
 app.post("/apply-job", async (req, res) => {
-  const job = await Job.findById(req.body.job_id);
-  if (!job) return res.json({ status: "job_not_found" });
+  try {
+    const {
+      job_id,
+      first_name,
+      last_name,
+      email,
+      phone,
+      location,
+      resume_link,
+      message
+    } = req.body;
 
-  const application = await JobApplication.create({
-    ...req.body,
-    job_title: job.title
-  });
+    // 1️⃣ Validate basics
+    if (!job_id || !first_name || !last_name || !email || !phone || !location) {
+      return res.json({ status: "missing_fields" });
+    }
 
-  await Notification.create({
-    type: "job_application",
-    message: `New application for ${job.title}`,
-    related_id: application._id
-  });
-
-  res.json({ status: "application_submitted" });
+    // 2️⃣ Fetch job created by admin
+    const job = await Job.findById(job_id);
+    if (!job) {
+      return res.json({ status: "job_not_found" });
+    }
+    const alreadyApplied = await JobApplication.findOne({
+  job_id,
+  email
 });
+
+if (alreadyApplied) {
+  return res.json({ status: "already_applied" });
+}
+    // 3️⃣ Create application WITH job_title injected
+    const application = await JobApplication.create({
+      job_id,
+      job_title: job.title,   // ✅ THIS IS THE FIX
+      first_name,
+      last_name,
+      email,
+      phone,
+      location,
+      resume_link,
+      message,
+      status: "pending"
+    });
+
+    // 4️⃣ Notify admin
+    await Notification.create({
+      type: "job_application",
+      message: `New application for ${job.title}`,
+      related_id: application._id
+    });
+
+    res.json({ status: "application_submitted" });
+
+  } catch (err) {
+    console.error("Apply job error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
 
 app.get("/admin/job-applications", async (req, res) => {
   const applications = await JobApplication.find().sort({ createdAt: -1 });
@@ -274,6 +329,10 @@ app.get("/admin/job-applications", async (req, res) => {
 
 app.post("/admin/interview/schedule", async (req, res) => {
   const { application_id, date, time, mode, location } = req.body;
+
+  if (!application_id || !date || !time || !mode || !location) {
+    return res.json({ status: "missing_fields" });
+  }
 
   const appData = await JobApplication.findById(application_id);
   if (!appData) return res.json({ status: "not_found" });
@@ -339,6 +398,30 @@ app.post("/admin/interview/select", async (req, res) => {
   await sendOTP(appData.email, otp);
 
   res.json({ status: "account_created_otp_sent" });
+});
+
+app.post("/rider/pickup", async (req, res) => {
+  const donation = await Donation.findById(req.body.donation_id);
+  if (!donation) return res.json({ status: "not_found" });
+
+  donation.rider_email = req.body.rider_email;
+  donation.donation_status = "picked";
+  await donation.save();
+
+  res.json({ status: "pickup_locked" });
+});
+
+app.post("/rider/mark-delivered", async (req, res) => {
+  const donation = await Donation.findById(req.body.donation_id);
+  donation.donation_status = "delivered";
+  await donation.save();
+
+  res.json({ status: "delivered_success" });
+});
+
+app.post("/rider/available-pickups", async (req, res) => {
+  const donations = await Donation.find({ donation_status: "not_picked" });
+  res.json({ status: "success", donations });
 });
 
 /* ================= START ================= */
