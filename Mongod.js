@@ -32,7 +32,7 @@ mongoose
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
-/* ================= EMAIL BASE ================= */
+/* ================= EMAIL CORE ================= */
 const sendEmail = async ({ to, subject, html }) => {
   await axios.post(
     "https://api.brevo.com/v3/smtp/email",
@@ -64,8 +64,35 @@ const sendOTP = async (email, otp) => {
   });
 };
 
+/* ================= INTERVIEW EMAIL ================= */
+const sendInterviewAcceptEmail = async ({
+  to,
+  name,
+  job,
+  date,
+  time,
+  mode,
+  location
+}) => {
+  await sendEmail({
+    to,
+    subject: `Interview Invitation – ${job}`,
+    html: `
+      <p>Dear ${name},</p>
+      <p>You are shortlisted for <b>${job}</b>.</p>
+      <ul>
+        <li>Date: ${date}</li>
+        <li>Time: ${time}</li>
+        <li>Mode: ${mode}</li>
+        <li>Location: ${location}</li>
+      </ul>
+      <p>Please reply to confirm availability.</p>
+    `
+  });
+};
+
 /* =================================================
-   AUTH (UNCHANGED)
+   AUTH
 ================================================= */
 
 app.post("/signup", async (req, res) => {
@@ -170,7 +197,7 @@ app.post("/login", async (req, res) => {
 });
 
 /* =================================================
-   DONATION (UNCHANGED)
+   DONATION + MY REQUESTS
 ================================================= */
 
 app.post("/donate", async (req, res) => {
@@ -199,51 +226,13 @@ app.post("/verify-donate-otp", async (req, res) => {
   res.json({ status: "donation_verified" });
 });
 
-/* =================================================
-   RIDER (UNCHANGED)
-================================================= */
-
-app.post("/rider/pickup", async (req, res) => {
-  const donation = await Donation.findById(req.body.donation_id);
-  donation.rider_email = req.body.rider_email;
-  donation.donation_status = "picked";
-  await donation.save();
-  res.json({ status: "pickup_locked" });
-});
-
-app.post("/rider/mark-delivered", async (req, res) => {
-  const donation = await Donation.findById(req.body.donation_id);
-  donation.donation_status = "delivered";
-  await donation.save();
-  res.json({ status: "delivered_success" });
-});
-
-app.post("/rider/my-rides", async (req, res) => {
-  const rides = await Donation.find({ rider_email: req.body.rider_email });
-  res.json({ status: "success", rides });
-});
-
-app.post("/rider/available-pickups", async (req, res) => {
-  const donations = await Donation.find({ donation_status: "not_picked" });
-  res.json({ status: "success", donations });
+app.post("/my-requests", async (req, res) => {
+  const requests = await Donation.find({ donor_email: req.body.email });
+  res.json({ status: "success", requests });
 });
 
 /* =================================================
-   ADS (UNCHANGED)
-================================================= */
-
-app.post("/admin/add-advertisement", async (req, res) => {
-  const ad = await Advertisement.create(req.body);
-  res.json({ status: "advertisement_added", ad });
-});
-
-app.get("/advertisements", async (req, res) => {
-  const ads = await Advertisement.find();
-  res.json({ status: "success", ads });
-});
-
-/* =================================================
-   JOBS + INTERVIEW (ADDED ONLY)
+   JOBS
 ================================================= */
 
 app.post("/admin/add-job", async (req, res) => {
@@ -279,7 +268,9 @@ app.get("/admin/job-applications", async (req, res) => {
   res.json({ status: "success", applications });
 });
 
-/* ================= INTERVIEW SCHEDULE ================= */
+/* =================================================
+   INTERVIEW FLOW
+================================================= */
 
 app.post("/admin/interview/schedule", async (req, res) => {
   const { application_id, date, time, mode, location } = req.body;
@@ -291,25 +282,18 @@ app.post("/admin/interview/schedule", async (req, res) => {
   appData.interview = { date, time, mode, location };
   await appData.save();
 
-  await sendEmail({
+  await sendInterviewAcceptEmail({
     to: appData.email,
-    subject: `Interview Invitation – ${appData.job_title}`,
-    html: `
-      <p>Dear ${appData.first_name},</p>
-      <p>You are shortlisted for <b>${appData.job_title}</b>.</p>
-      <ul>
-        <li>Date: ${date}</li>
-        <li>Time: ${time}</li>
-        <li>Mode: ${mode}</li>
-        <li>Location: ${location}</li>
-      </ul>
-    `
+    name: appData.first_name,
+    job: appData.job_title,
+    date,
+    time,
+    mode,
+    location
   });
 
   res.json({ status: "interview_scheduled" });
 });
-
-/* ================= INTERVIEW REJECT ================= */
 
 app.post("/admin/interview/reject", async (req, res) => {
   const appData = await JobApplication.findById(req.body.application_id);
@@ -321,16 +305,11 @@ app.post("/admin/interview/reject", async (req, res) => {
   await sendEmail({
     to: appData.email,
     subject: "Application Update – DWJD",
-    html: `
-      <p>Dear ${appData.first_name},</p>
-      <p>We appreciate your effort. Unfortunately, we won’t proceed further.</p>
-    `
+    html: `<p>Thank you for applying. We won’t proceed further.</p>`
   });
 
   res.json({ status: "rejected" });
 });
-
-/* ================= FINAL SELECT → AUTO ACCOUNT ================= */
 
 app.post("/admin/interview/select", async (req, res) => {
   const { application_id, username, password, user_type } = req.body;
