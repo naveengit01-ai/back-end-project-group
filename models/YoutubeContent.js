@@ -1,16 +1,22 @@
 const mongoose = require("mongoose");
 
-const youtubeContentSchema = new mongoose.Schema(
+const YoutubeContentSchema = new mongoose.Schema(
   {
     title: String,
     description: String,
     embedCode: String,
+
     views: {
       type: Number,
       default: 0
+    },
+
+    is_active: {
+      type: Boolean,
+      default: true
     }
   },
   { timestamps: true }
 );
 
-module.exports = mongoose.model("YoutubeContent", youtubeContentSchema);
+module.exports = mongoose.model("YoutubeContent", YoutubeContentSchema);

@@ -776,7 +776,6 @@ app.get("/admin/application/:id", async (req, res) => {
   }
 });
 
-
 app.post("/admin/youtube-content", async (req, res) => {
   try {
     const { title, description, embedCode } = req.body;
@@ -785,35 +784,67 @@ app.post("/admin/youtube-content", async (req, res) => {
       return res.json({ status: "missing_fields" });
     }
 
-    const content = await YoutubeContent.create({
+    await YoutubeContent.create({
       title,
       description,
       embedCode
     });
 
-    res.json({
-      status: "success",
-      url: `https://dwjd.vercel.app/youtube/${content._id}`
-    });
+    res.json({ status: "content_added" });
   } catch (err) {
     res.status(500).json({ status: "error" });
   }
 });
 
 app.get("/youtube-content", async (req, res) => {
-  const contents = await YoutubeContent.find().sort({ createdAt: -1 });
-  res.json({ status: "success", contents });
+  try {
+    const contents = await YoutubeContent.find({ is_active: true })
+      .sort({ createdAt: -1 });
+
+    res.json({
+      status: "success",
+      contents
+    });
+  } catch {
+    res.status(500).json({ status: "error" });
+  }
 });
 
 app.get("/youtube/:id", async (req, res) => {
-  const content = await YoutubeContent.findById(req.params.id);
-  if (!content) return res.json({ status: "not_found" });
+  try {
+    const content = await YoutubeContent.findOne({
+      _id: req.params.id,
+      is_active: true
+    });
 
-  content.views += 1;
-  await content.save();
+    if (!content) {
+      return res.json({ status: "not_found" });
+    }
 
-  res.json({ status: "success", content });
+    content.views += 1;
+    await content.save();
+
+    res.json({
+      status: "success",
+      content
+    });
+  } catch {
+    res.status(500).json({ status: "error" });
+  }
 });
+
+app.put("/admin/youtube-content/:id/deactivate", async (req, res) => {
+  try {
+    await YoutubeContent.findByIdAndUpdate(req.params.id, {
+      is_active: false
+    });
+
+    res.json({ status: "deactivated" });
+  } catch {
+    res.status(500).json({ status: "error" });
+  }
+});
+
 
 
 /* ================= START ================= */
