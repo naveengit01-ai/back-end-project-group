@@ -778,28 +778,36 @@ app.get("/admin/application/:id", async (req, res) => {
 
 app.post("/admin/youtube-content", async (req, res) => {
   try {
-    const { title, description, embedCode } = req.body;
+    const { title, embedCode, mainTopics } = req.body;
 
-    if (!title || !description || !embedCode) {
-      return res.json({ status: "missing_fields" });
+    // ✅ Validation
+    if (!title) {
+      return res.json({ status: "title_required" });
+    }
+
+    if (!Array.isArray(mainTopics) || mainTopics.length === 0) {
+      return res.json({ status: "main_topics_required" });
     }
 
     await YoutubeContent.create({
       title,
-      description,
-      embedCode
+      embedCode: embedCode || "",
+      mainTopics
     });
 
     res.json({ status: "content_added" });
   } catch (err) {
+    console.error("Add content error:", err);
     res.status(500).json({ status: "error" });
   }
 });
 
 
+
 app.get("/youtube-content", async (req, res) => {
   try {
     const contents = await YoutubeContent.find({ is_active: true })
+      .select("title views createdAt")
       .sort({ createdAt: -1 });
 
     res.json({
@@ -812,6 +820,7 @@ app.get("/youtube-content", async (req, res) => {
   }
 });
 
+
 app.get("/youtube/:id", async (req, res) => {
   try {
     const content = await YoutubeContent.findOne({
@@ -823,6 +832,7 @@ app.get("/youtube/:id", async (req, res) => {
       return res.json({ status: "not_found" });
     }
 
+    // 👀 Increment views
     content.views += 1;
     await content.save();
 
@@ -835,6 +845,7 @@ app.get("/youtube/:id", async (req, res) => {
     res.status(500).json({ status: "error" });
   }
 });
+
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
