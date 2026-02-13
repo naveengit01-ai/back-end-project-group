@@ -798,24 +798,23 @@ app.post("/admin/youtube-content", async (req, res) => {
 
 app.get("/youtube-content", async (req, res) => {
   try {
-    const contents = await YoutubeContent.find({ is_active: true })
+    const contents = await YoutubeContent.find()
       .sort({ createdAt: -1 });
 
     res.json({
       status: "success",
       contents
     });
-  } catch {
+  } catch (err) {
     res.status(500).json({ status: "error" });
   }
 });
 
+
+
 app.get("/youtube/:id", async (req, res) => {
   try {
-    const content = await YoutubeContent.findOne({
-      _id: req.params.id,
-      is_active: true
-    });
+    const content = await YoutubeContent.findById(req.params.id);
 
     if (!content) {
       return res.json({ status: "not_found" });
@@ -828,10 +827,11 @@ app.get("/youtube/:id", async (req, res) => {
       status: "success",
       content
     });
-  } catch {
+  } catch (err) {
     res.status(500).json({ status: "error" });
   }
 });
+
 
 app.put("/admin/youtube-content/:id/deactivate", async (req, res) => {
   try {
