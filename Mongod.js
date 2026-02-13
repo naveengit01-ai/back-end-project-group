@@ -12,6 +12,7 @@ const Advertisement = require("./models/Advertisement");
 const Job = require("./models/Job");
 const JobApplication = require("./models/JobApplication");
 const Notification = require("./models/Notification");
+const YoutubeContent = require("./models/YoutubeContent");
 
 const app = express();
 
@@ -771,6 +772,45 @@ app.get("/admin/application/:id", async (req, res) => {
     console.error(err);
     res.status(500).json({ status: "error" });
   }
+});
+
+
+app.post("/admin/youtube-content", async (req, res) => {
+  try {
+    const { title, description, embedCode } = req.body;
+
+    if (!title || !description || !embedCode) {
+      return res.json({ status: "missing_fields" });
+    }
+
+    const content = await YoutubeContent.create({
+      title,
+      description,
+      embedCode
+    });
+
+    res.json({
+      status: "success",
+      url: `https://dwjd.vercel.app/youtube/${content._id}`
+    });
+  } catch (err) {
+    res.status(500).json({ status: "error" });
+  }
+});
+
+app.get("/youtube-content", async (req, res) => {
+  const contents = await YoutubeContent.find().sort({ createdAt: -1 });
+  res.json({ status: "success", contents });
+});
+
+app.get("/youtube/:id", async (req, res) => {
+  const content = await YoutubeContent.findById(req.params.id);
+  if (!content) return res.json({ status: "not_found" });
+
+  content.views += 1;
+  await content.save();
+
+  res.json({ status: "success", content });
 });
 
 
