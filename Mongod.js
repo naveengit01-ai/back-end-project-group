@@ -796,9 +796,10 @@ app.post("/admin/youtube-content", async (req, res) => {
   }
 });
 
+
 app.get("/youtube-content", async (req, res) => {
   try {
-    const contents = await YoutubeContent.find()
+    const contents = await YoutubeContent.find({ is_active: true })
       .sort({ createdAt: -1 });
 
     res.json({
@@ -806,15 +807,17 @@ app.get("/youtube-content", async (req, res) => {
       contents
     });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ status: "error" });
   }
 });
 
-
-
 app.get("/youtube/:id", async (req, res) => {
   try {
-    const content = await YoutubeContent.findById(req.params.id);
+    const content = await YoutubeContent.findOne({
+      _id: req.params.id,
+      is_active: true
+    });
 
     if (!content) {
       return res.json({ status: "not_found" });
@@ -828,24 +831,10 @@ app.get("/youtube/:id", async (req, res) => {
       content
     });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ status: "error" });
   }
 });
-
-
-app.put("/admin/youtube-content/:id/deactivate", async (req, res) => {
-  try {
-    await YoutubeContent.findByIdAndUpdate(req.params.id, {
-      is_active: false
-    });
-
-    res.json({ status: "deactivated" });
-  } catch {
-    res.status(500).json({ status: "error" });
-  }
-});
-
-
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
