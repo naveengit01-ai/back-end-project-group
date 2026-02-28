@@ -1,5 +1,5 @@
 const axios = require("axios");
-const { buildUserContext } = require("../utils/promptBuilder");
+const { buildUserContext } = require("../ai/promptBuilder");
 
 const LLM_URL = "https://llm-model-t322.onrender.com/chat";
 const LLM_TIMEOUT = 8000; // 8 sec max
