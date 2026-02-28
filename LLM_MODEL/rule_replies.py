@@ -1,25 +1,24 @@
 def rule_reply(message, user):
-    message = message.lower()
+    msg = message.lower()
 
-    # 👤 PROFILE
-    if "my email" in message:
-        return f"Your registered email is {user.get('email', 'not found')}"
+    email = user["email"] if "email" in user else None
+    first = user["first_name"] if "first_name" in user else ""
+    last = user["last_name"] if "last_name" in user else ""
+    role = user.get("user_type", "")
 
-    if "my name" in message:
-        first = user.get("first_name", "")
-        last = user.get("last_name", "")
+    if "my email" in msg or "email" in msg:
+        return f"Your registered email is {email}"
+
+    if "my name" in msg or "name" in msg:
         return f"Your name is {first} {last}".strip()
 
-    # ❤️ DONATIONS
-    if "my donations" in message:
-        return "I can check your donation history for you."
+    if "donation" in msg:
+        return "I can check your donation history."
 
-    # 💼 JOBS
-    if "my jobs" in message or "job applications" in message:
-        return "I can help you with your job applications."
+    if role == "rider" and "ride" in msg:
+        return "I can check your rides."
 
-    # 🔐 LOGIN / SIGNUP
-    if "login" in message or "sign up" in message or "signup" in message:
-        return "If you're facing login or signup issues, I can guide you step by step."
+    if "login" in msg or "signup" in msg:
+        return "I can help you with login or signup issues."
 
     return None
