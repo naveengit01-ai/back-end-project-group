@@ -13,14 +13,14 @@ const Job = require("./models/Job");
 const JobApplication = require("./models/JobApplication");
 const Notification = require("./models/Notification");
 const YoutubeContent = require("./models/YoutubeContent");
-
+const aiRoutes = require("./routes/ai");
 const app = express();
 
 /* ================= MIDDLEWARE ================= */
 app.use(express.json());
 app.use(cors());
 app.options("*", cors());
-
+app.use("/ai", aiRoutes);
 
 /* ================= DATABASE ================= */
 mongoose
