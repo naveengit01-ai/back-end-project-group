@@ -1,41 +1,36 @@
 import pdfplumber
 import os
 
-PDF_PATH = "DWJD_Workflow.pdf"  # ✅ correct path
+PDF_PATH = os.path.join(os.path.dirname(__file__), "DWJD_Workflow.pdf")
 
 _cached_text = None
 
-def load_pdf_text():
+def load_pdf():
     global _cached_text
-
     if _cached_text:
         return _cached_text
-
-    if not os.path.exists(PDF_PATH):
-        print("❌ PDF not found at:", PDF_PATH)
-        return ""
 
     text = ""
     with pdfplumber.open(PDF_PATH) as pdf:
         for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
+            text += page.extract_text() + "\n"
 
-    _cached_text = text.lower()
-    print("✅ PDF loaded successfully")
-    return _cached_text
+    _cached_text = text
+    return text
+
+
+def get_full_kb():
+    return load_pdf()
 
 
 def search_kb(query: str):
-    text = load_pdf_text()
-    query = query.lower().strip()
+    text = load_pdf()
+    keywords = query.lower().split()
 
-    if not text:
-        return ""
+    score = sum(1 for k in keywords if k in text.lower())
 
-    if query in text:
-        idx = text.find(query)
-        return text[max(0, idx - 800): idx + 800]
+    # 🔹 Very loose threshold (important)
+    if score >= 1:
+        return text
 
-    return ""
+    return None

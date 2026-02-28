@@ -1,24 +1,42 @@
 def rule_reply(message, user):
-    msg = message.lower()
+    msg = message.lower().strip()
 
-    email = user["email"] if "email" in user else None
-    first = user["first_name"] if "first_name" in user else ""
-    last = user["last_name"] if "last_name" in user else ""
+    email = user.get("email")
+    first = user.get("first_name", "")
+    last = user.get("last_name", "")
     role = user.get("user_type", "")
 
-    if "my email" in msg or "email" in msg:
+    # ✅ STRICT personal queries only
+    if msg in ["my email", "what is my email", "tell me my email"]:
         return f"Your registered email is {email}"
 
-    if "my name" in msg or "name" in msg:
-        return f"Your name is {first} {last}".strip()
+    if msg in ["my name", "what is my name", "tell me my name"]:
+        full_name = f"{first} {last}".strip()
+        return f"Your name is {full_name}" if full_name else "Your name is not fully updated."
 
-    if "donation" in msg:
-        return "I can check your donation history."
+    # ✅ Donations (personal)
+    if msg in ["my donations", "donation history", "how many donations i made"]:
+        return "I can check your donation history for you."
 
-    if role == "rider" and "ride" in msg:
-        return "I can check your rides."
+    # ✅ Rider-specific
+    if role == "rider" and msg in ["my rides", "ride history", "completed rides"]:
+        return "I can check how many rides you have completed."
 
-    if "login" in msg or "signup" in msg:
-        return "I can help you with login or signup issues."
+    # ✅ Login / Signup ISSUES (not explanations)
+    login_keywords = [
+        "can't login",
+        "cannot login",
+        "login problem",
+        "login issue",
+        "signup problem",
+        "signup issue",
+        "unable to signup"
+    ]
+    if any(k in msg for k in login_keywords):
+        return (
+            "I can help with login or signup issues. "
+            "Please tell me what error you are facing."
+        )
 
+    # ❌ IMPORTANT: Do NOT intercept project questions
     return None

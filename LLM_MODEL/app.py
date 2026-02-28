@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from llm_engine import ask_llm
-from knowledge_base import search_kb
+from knowledge_base import get_full_kb, search_kb
 
 app = FastAPI(title="DWJD LLM Service")
 
@@ -14,27 +14,22 @@ def chat(req: ChatRequest):
     try:
         question = req.message.lower()
 
-        # 🔍 Search PDF knowledge base
-        kb_context = search_kb(question)
+        # 🔹 Always load base knowledge
+        base_context = get_full_kb()
 
-        # 🧠 If PDF has relevant content, use it
-        if kb_context:
-            return {
-                "reply": ask_llm(kb_context, question)
-            }
+        # 🔹 Try to narrow it (optional)
+        focused_context = search_kb(question)
 
-        # 🤖 Fallback (no PDF match)
+        context = focused_context or base_context
+
         return {
-            "reply": ask_llm(
-                "DWJD is a donation and job assistance platform.",
-                question
-            )
+            "reply": ask_llm(context, question)
         }
 
     except Exception as e:
-        print("❌ LLM ERROR:", str(e))
+        print("LLM ERROR:", e)
         return {
-            "reply": "I'm having trouble answering that right now, but I can still help with login, signup, donations, and jobs 🙂"
+            "reply": "I'm having a temporary issue, but I can still explain DWJD and help you 🙂"
         }
 @app.get("/debug/pdf")
 def debug_pdf():
