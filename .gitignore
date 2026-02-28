@@ -1,1 +1,5 @@
 .env
+# Python
+__pycache__/
+*.pyc
+.envgit rm -r --cached LLM_MODEL/__pycache__
