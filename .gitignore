@@ -1,5 +1,8 @@
 .env
+<<<<<<< HEAD
 # Python
 __pycache__/
 *.pyc
 .envgit rm -r --cached LLM_MODEL/__pycache__
+=======
+>>>>>>> c765dcc1e2d0bf4a98963356936c3162381cd310
