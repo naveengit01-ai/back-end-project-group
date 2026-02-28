@@ -34,3 +34,11 @@ def chat(req: ChatRequest):
         return {
             "reply": "I'm having trouble answering that right now 🙂"
         }
+@app.get("/debug/pdf")
+def debug_pdf():
+    from knowledge_base import load_pdf_text
+    text = load_pdf_text()
+    return {
+        "loaded": bool(text),
+        "length": len(text)
+    }
