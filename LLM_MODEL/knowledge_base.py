@@ -1,15 +1,41 @@
 import pdfplumber
+import os
 
-KB_TEXT = ""
+PDF_PATH = "DWJD_Workflow.pdf"  # ✅ correct path
 
-def load_pdf():
-    global KB_TEXT
-    with pdfplumber.open("DWJD_Workflow.pdf") as pdf:
-        KB_TEXT = "\n".join(page.extract_text() or "" for page in pdf.pages).lower()
+_cached_text = None
 
-load_pdf()
+def load_pdf_text():
+    global _cached_text
+
+    if _cached_text:
+        return _cached_text
+
+    if not os.path.exists(PDF_PATH):
+        print("❌ PDF not found at:", PDF_PATH)
+        return ""
+
+    text = ""
+    with pdfplumber.open(PDF_PATH) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+
+    _cached_text = text.lower()
+    print("✅ PDF loaded successfully")
+    return _cached_text
+
 
 def search_kb(query: str):
-    if "how" in query or "work" in query or "donation" in query:
-        return KB_TEXT[:1500]  # limit context
-    return None
+    text = load_pdf_text()
+    query = query.lower().strip()
+
+    if not text:
+        return ""
+
+    if query in text:
+        idx = text.find(query)
+        return text[max(0, idx - 800): idx + 800]
+
+    return ""
