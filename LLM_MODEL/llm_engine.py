@@ -18,4 +18,4 @@ def ask_llm(context, question):
         )
         return res.choices[0].message.content
     except Exception:
-        return "I can help with profile, donations, jobs, or login issues 🙂"
+        return "I can help with profile, donations, jobs, or login issue 🙂"
