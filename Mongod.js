@@ -14,6 +14,7 @@ const JobApplication = require("./models/JobApplication");
 const Notification = require("./models/Notification");
 const YoutubeContent = require("./models/YoutubeContent");
 const aiRoutes = require("./routes/ai");
+const AdminTodo = require("./models/AdminToDo");
 const app = express();
 
 /* ================= MIDDLEWARE ================= */
@@ -846,6 +847,106 @@ app.get("/youtube/:id", async (req, res) => {
   }
 });
 
+
+app.post("/admin/todo/create", async (req, res) => {
+  try {
+    const { tasks } = req.body;
+
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return res.json({ status: "tasks_required" });
+    }
+
+    const today = new Date().toISOString().split("T")[0];
+
+    const exists = await AdminTodo.findOne({ date: today });
+    if (exists) {
+      return res.json({ status: "already_created_today" });
+    }
+
+    await AdminTodo.create({
+      date: today,
+      tasks: tasks.map(t => ({ title: t }))
+    });
+
+    res.json({ status: "todo_created" });
+
+  } catch (err) {
+    console.error("Todo create error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+app.get("/admin/todo/today", async (req, res) => {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+
+    const todo = await AdminTodo.findOne({ date: today });
+
+    if (!todo) {
+      return res.json({ status: "not_created" });
+    }
+
+    res.json({
+      status: "success",
+      todo
+    });
+
+  } catch (err) {
+    console.error("Fetch todo error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+app.post("/admin/todo/mark", async (req, res) => {
+  try {
+    const { task_id } = req.body;
+
+    if (!task_id) {
+      return res.json({ status: "task_id_required" });
+    }
+
+    const today = new Date().toISOString().split("T")[0];
+    const todo = await AdminTodo.findOne({ date: today });
+
+    if (!todo) {
+      return res.json({ status: "todo_not_found" });
+    }
+
+    const now = Date.now();
+    const ONE_HOUR = 60 * 60 * 1000;
+
+    if (todo.lastMarkedAt && now - todo.lastMarkedAt.getTime() < ONE_HOUR) {
+      const remaining =
+        ONE_HOUR - (now - todo.lastMarkedAt.getTime());
+
+      return res.json({
+        status: "wait",
+        remainingMinutes: Math.ceil(remaining / 60000)
+      });
+    }
+
+    const task = todo.tasks.id(task_id);
+    if (!task) {
+      return res.json({ status: "task_not_found" });
+    }
+
+    if (task.completed) {
+      return res.json({ status: "already_completed" });
+    }
+
+    task.completed = true;
+    task.completedAt = new Date();
+    todo.lastMarkedAt = new Date();
+
+    await todo.save();
+
+    res.json({ status: "task_marked" });
+
+  } catch (err) {
+    console.error("Mark task error:", err);
+    res.status(500).json({ status: "error" });
+  }
+});
 
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
