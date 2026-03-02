@@ -1,116 +1,189 @@
+DWJD - DON'T WASTE JUST DONATE
+================================
 
-Admin schedules interviews
+WHAT IS DWJD?
+DWJD (Don't Waste, Just Donate) is a web-based donation and delivery management platform that connects donors, delivery riders, and recipients. It reduces food wastage by allowing surplus food and items to reach people in need through a secure and verified workflow.
 
-Emails sent automatically
+Live platform: https://dwjd.vercel.app/
 
-Admin selects or rejects
+---
 
-Employee accounts auto-created
+WHO ARE THE USERS?
+There are 3 types of users on DWJD:
+1. User (Donor) - People who donate food or items
+2. Rider - Delivery volunteers who pick up and deliver donations
+3. Admin - Manages the entire system
 
-🔟 ADMIN TO-DO LIST SYSTEM
-Key Features
+---
 
-Admin can create only one To-Do list per day
+HOW TO SIGN UP?
+1. Go to the DWJD website and click Sign Up
+2. Fill in your name, email, password, and select your role (user or rider)
+3. An OTP will be sent to your email
+4. Enter the OTP to verify your account
+5. Once verified, you can login
 
-Tasks are locked after save
+---
 
-Confirmation popup before save
+HOW TO LOGIN?
+1. Go to the login page
+2. Enter your email and password
+3. Select your role (user or rider)
+4. Click login
+5. You will be redirected to your dashboard
 
-Tasks persist after logout
+---
 
-Only one task can be marked per hour
+HOW DOES DONATION WORK?
+1. User logs in and goes to the Donate section
+2. User fills in donation details like item type, item name, quantity, and pickup location
+3. System generates an OTP and sends it to the donor's email
+4. Rider views available pickups and locks one
+5. Rider goes to pickup location and asks donor for OTP
+6. Rider enters OTP to verify and confirm pickup
+7. Rider delivers the item and marks it as delivered
+8. Donation status updates automatically
 
-Time enforcement done by backend
+Donation status flow: Not Picked → Picked → Delivered
 
-Prevents fake productivity
+---
 
-Encourages discipline
+WHAT CAN A DONOR DO?
+- Sign up and verify email
+- Login to the platform
+- Submit donation requests with item details
+- View all their donation history
+- Track donation status in real time
+- Apply for jobs on the platform
 
-This is a real productivity control system, not a toy checklist.
+---
 
-1️⃣1️⃣ AI ASSISTANT SYSTEM
-Why AI?
+WHAT CAN A RIDER DO?
+- Sign up with location access
+- Login to the platform
+- View all available pickup requests
+- Lock a pickup so no other rider can take it
+- Verify donor OTP before pickup
+- Mark donation as delivered after completing delivery
+- View all assigned and completed rides in My Rides section
 
-Reduce admin load
+---
 
-Help users instantly
+WHAT CAN AN ADMIN DO?
+- Login using predefined credentials
+- View dashboard with system statistics
+- See total users, riders, donations, delivered items, and rejected pickups
+- Create and manage advertisements
+- Add jobs for people to apply
+- Review job applications and schedule interviews
+- Select candidates and create employee accounts
+- Manage daily To-Do lists
+- Monitor overall platform health
 
-Explain platform features
+---
 
-Handle login & signup issues
+HOW DOES OTP VERIFICATION WORK?
+- OTP is a 6-digit one-time password
+- It is sent to the donor's email when a donation is created
+- Rider must enter this OTP at the time of pickup to confirm the donation
+- OTP expires after 10 minutes
+- Without correct OTP, rider cannot proceed with delivery
+- This prevents unauthorized pickups
 
-Answer profile-based questions
+---
 
-How it works
+WHAT ITEMS CAN BE DONATED?
+- Food (cooked meals, packaged food, groceries)
+- Clothes
+- Other essential items
 
-Frontend sends message
+---
 
-Backend validates token
+HOW TO TRACK MY DONATION?
+- Login to your account
+- Go to My Requests section
+- You can see the current status of all your donations
+- Status will show: Not Picked, Picked, or Delivered
 
-User context attached
+---
 
-Request forwarded to LLM service
+HOW DOES THE JOB MODULE WORK?
+- Admin creates job listings on the platform
+- Users can view available jobs and apply
+- Admin reviews applications and can schedule interviews
+- Admin can reject or select candidates
+- Selected candidates receive login credentials via email
 
-Rule-based reply checked
+---
 
-PDF knowledge searched
+WHAT IS THE ADVERTISEMENT MODULE?
+- Admin can create promotional advertisements
+- These ads are shown to users after they login
+- Only active advertisements are displayed
+- Admin can control visibility of each advertisement
 
-LLM fallback used
+---
 
-Response returned
+TECHNOLOGY USED IN DWJD
+- Frontend: React.js with Vite
+- Backend: Node.js and Express.js
+- Database: MongoDB with Mongoose
+- Authentication: JWT (JSON Web Token)
+- Password Security: bcrypt hashing
+- Email Service: Brevo API
+- AI Assistant: Groq LLM (LLaMA 3)
+- Frontend Hosting: Vercel
+- Backend Hosting: Render
+- Database Hosting: MongoDB Atlas
 
-Smart Behavior
+---
 
-Greets users
+SECURITY FEATURES
+- Passwords are encrypted using bcrypt and never stored as plain text
+- JWT tokens are used for secure session management and expire after 7 days
+- OTP verification ensures only authorized riders can pick up donations
+- Role-based access control prevents users from accessing admin or rider features
+- Input validation is enforced on all API endpoints
+- OTPs expire after 10 minutes and are deleted after use
 
-Answers “my email”, “my name”
+---
 
-Explains DWJD
+COMMON ISSUES AND SOLUTIONS
 
-Handles errors gracefully
+Login not working?
+- Check your email and password are correct
+- Make sure you selected the correct role
+- Check if your account is verified via OTP
+- Try logging out and logging in again
 
-Never crashes frontend
+Signup not working?
+- Make sure all fields are filled in
+- Check your email for the OTP
+- OTP expires in 10 minutes, request a new one if needed
+- Make sure your password and confirm password match
 
-1️⃣2️⃣ PDF KNOWLEDGE BASE
+OTP not received?
+- Check your spam or junk folder
+- Wait a few seconds and check again
+- Request a new OTP from the platform
 
-Admin uploads project PDFs
+Donation not showing for rider?
+- Make sure the donation status is Not Picked
+- Refresh the available pickups page
 
-PDFs parsed on server start
+Rider cannot complete delivery?
+- Make sure the OTP from the donor is correct
+- OTP must be verified before marking as delivered
 
-Text cached in memory
+---
 
-LLM answers based on PDF content
+ABOUT THE TEAM
+Project Name: DWJD - Don't Waste Just Donate
+Backend Developer: Kola Naveen
+Team Members: B. Dinesh Reddy, M. Ajay Kumar Reddy, P. Gnaneshwar Reddy
 
-Users get project-specific answers
+---
 
-Admin can verify PDF load status
-
-1️⃣3️⃣ SECURITY MEASURES
-
-Password hashing (bcrypt)
-
-JWT authentication
-
-OTP expiration
-
-Role-based access
-
-API validation
-
-Admin-only routes
-
-Secret keys via environment variables
-
-1️⃣4️⃣ ERROR HANDLING STRATEGY
-
-No raw crashes
-
-Friendly fallback messages
-
-AI failure handled gracefully
-
-Network failure safe
-
-Backend logs for admin
-
-User never sees stack traces
+CONTACT AND SUPPORT
+For any issues or queries, contact the DWJD support team through the platform.
+Live website: https://dwjd.vercel.app/
