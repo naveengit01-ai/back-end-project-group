@@ -1,0 +1,364 @@
+📌 PROJECT TITLE
+
+DWJD – Don’t Waste, Just Donate
+
+1️⃣ INTRODUCTION
+
+DWJD (Don’t Waste, Just Donate) is a full-stack, role-based web application designed to reduce food waste and connect surplus food providers with people in need. The platform bridges the gap between donors, volunteers (riders), and administrators by using real-time coordination, authentication, OTP verification, and intelligent automation.
+
+The project focuses on:
+
+Reducing food wastage
+
+Enabling transparent donation flow
+
+Providing job opportunities
+
+Managing logistics using riders
+
+Offering AI-based assistance for users
+
+Giving admins full operational control
+
+DWJD is built using modern web technologies and follows real-world system architecture.
+
+2️⃣ PROBLEM STATEMENT
+
+Every day:
+
+Tons of food are wasted
+
+Many people go hungry
+
+Donors lack an easy system to donate surplus food
+
+NGOs struggle with coordination
+
+Volunteers are not efficiently assigned
+
+Admins lack visibility and control
+
+Existing solutions are either:
+
+Manual
+
+Not scalable
+
+Not secure
+
+Not user-friendly
+
+DWJD solves this problem with a centralized, intelligent, and secure platform.
+
+3️⃣ OBJECTIVES OF THE PROJECT
+
+Reduce food wastage
+
+Enable easy donation submission
+
+Provide secure user authentication
+
+Allow riders to manage pickups and deliveries
+
+Help admins manage everything from one dashboard
+
+Integrate AI to answer user queries
+
+Maintain audit-ready data using MongoDB
+
+Support future scalability
+
+4️⃣ USER ROLES IN DWJD
+🔹 Admin
+
+Full system control
+
+Create daily To-Do lists
+
+Manage jobs
+
+Manage donations
+
+Manage riders
+
+Review applications
+
+Send emails
+
+Add YouTube content
+
+Monitor system health
+
+🔹 User (Donor)
+
+Signup & login
+
+Donate food
+
+Verify donation via OTP
+
+Track donation status
+
+Apply for jobs
+
+Edit profile
+
+Use AI assistant
+
+🔹 Rider (Volunteer)
+
+View available pickups
+
+Lock a pickup
+
+Verify donation OTP
+
+Mark delivery completed
+
+View delivery history
+
+Use AI assistant
+
+5️⃣ SYSTEM ARCHITECTURE
+Frontend
+
+React (Vite)
+
+Role-based routing
+
+Token-based auth
+
+Responsive UI
+
+AI chat widget
+
+Admin dashboard
+
+Toasts & confirmations
+
+Backend
+
+Node.js
+
+Express.js
+
+REST APIs
+
+JWT authentication
+
+OTP verification
+
+Email integration
+
+AI proxy service
+
+Database
+
+MongoDB
+
+Mongoose ODM
+
+Role-specific schemas
+
+Secure storage
+
+AI Layer
+
+Separate LLM microservice
+
+Context-aware responses
+
+Rule-based + LLM fallback
+
+PDF knowledge ingestion
+
+Admin-only debugging
+
+6️⃣ AUTHENTICATION FLOW
+Signup
+
+User enters details
+
+Password is hashed
+
+OTP generated
+
+OTP emailed
+
+User verifies OTP
+
+Account activated
+
+Login
+
+Credentials verified
+
+Role validated
+
+JWT token generated
+
+Token stored in localStorage
+
+Protected routes unlocked
+
+7️⃣ DONATION FLOW
+
+User submits donation
+
+OTP generated for donation
+
+OTP sent to donor email
+
+Donation marked unverified
+
+Rider picks donation
+
+OTP verified by rider
+
+Donation status updated
+
+Delivery completed
+
+Data stored permanently
+
+8️⃣ RIDER FLOW
+
+Riders see available pickups
+
+Lock a pickup (no race condition)
+
+Verify OTP at pickup
+
+Mark delivery complete
+
+View delivery history
+
+This ensures one rider per donation, preventing conflicts.
+
+9️⃣ JOB MODULE
+
+Admin creates jobs
+
+Users view job listings
+
+Users apply
+
+Duplicate applications blocked
+
+Admin reviews applications
+
+Admin schedules interviews
+
+Emails sent automatically
+
+Admin selects or rejects
+
+Employee accounts auto-created
+
+🔟 ADMIN TO-DO LIST SYSTEM
+Key Features
+
+Admin can create only one To-Do list per day
+
+Tasks are locked after save
+
+Confirmation popup before save
+
+Tasks persist after logout
+
+Only one task can be marked per hour
+
+Time enforcement done by backend
+
+Prevents fake productivity
+
+Encourages discipline
+
+This is a real productivity control system, not a toy checklist.
+
+1️⃣1️⃣ AI ASSISTANT SYSTEM
+Why AI?
+
+Reduce admin load
+
+Help users instantly
+
+Explain platform features
+
+Handle login & signup issues
+
+Answer profile-based questions
+
+How it works
+
+Frontend sends message
+
+Backend validates token
+
+User context attached
+
+Request forwarded to LLM service
+
+Rule-based reply checked
+
+PDF knowledge searched
+
+LLM fallback used
+
+Response returned
+
+Smart Behavior
+
+Greets users
+
+Answers “my email”, “my name”
+
+Explains DWJD
+
+Handles errors gracefully
+
+Never crashes frontend
+
+1️⃣2️⃣ PDF KNOWLEDGE BASE
+
+Admin uploads project PDFs
+
+PDFs parsed on server start
+
+Text cached in memory
+
+LLM answers based on PDF content
+
+Users get project-specific answers
+
+Admin can verify PDF load status
+
+1️⃣3️⃣ SECURITY MEASURES
+
+Password hashing (bcrypt)
+
+JWT authentication
+
+OTP expiration
+
+Role-based access
+
+API validation
+
+Admin-only routes
+
+Secret keys via environment variables
+
+1️⃣4️⃣ ERROR HANDLING STRATEGY
+
+No raw crashes
+
+Friendly fallback messages
+
+AI failure handled gracefully
+
+Network failure safe
+
+Backend logs for admin
+
+User never sees stack traces

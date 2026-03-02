@@ -1,11 +1,14 @@
-from openai import OpenAI
+from dotenv import load_dotenv
+load_dotenv()
+
+from groq import Groq
 import os
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 def ask_llm(context, question):
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+model="llama-3.3-70b-versatile",
         messages=[
             {
                 "role": "system",
@@ -29,5 +32,4 @@ QUESTION:
         ],
         temperature=0.2
     )
-
     return response.choices[0].message.content

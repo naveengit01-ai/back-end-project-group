@@ -2,7 +2,8 @@ const axios = require("axios");
 const { buildUserContext } = require("../ai/promptBuilder");
 const User = require("../models/User"); // ✅ FIX: fetch full user from DB
 
-const LLM_URL = "https://llm-model-t322.onrender.com/chat";
+// const LLM_URL = "https://llm-model-t322.onrender.com/chat";
+const LLM_URL = "http://127.0.0.1:8000/chat";
 const LLM_TIMEOUT = 55000; // ✅ FIX: 55 sec — handles Render cold start
 
 exports.chat = async (req, res) => {
