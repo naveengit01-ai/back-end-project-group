@@ -220,6 +220,9 @@ app.post("/verify-otp", async (req, res) => {
   user.otp = null;
   user.otp_expiry = null;
   await user.save();
+  console.log("DB OTP:", user.otp);
+  console.log("Received OTP:", otp);
+  console.log("OTP Match:", user.otp === otp);
 
   res.json({ status: "account_verified" });
 });
