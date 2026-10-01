@@ -19,12 +19,11 @@ const app = express();
 
 /* ================= MIDDLEWARE ================= */
 const corsOptions = {
-  origin: "https://dwjd.vercel.app",
-  // origin: "http://localhost:5173",
+  // origin: "https://dwjd.vercel.app",
+  origin: "http://localhost:5173",
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 };
-
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use("/ai", aiRoutes);
@@ -60,7 +59,30 @@ const sendEmail = async ({ to, subject, html }) => {
     }
   );
 };
+// ADMIN MODEL
+// ===============================
 
+const adminSchema = new mongoose.Schema(
+  {
+    username: String,
+    email: String,
+    password: String,
+    first_name: String,
+    last_name: String,
+    phone: String,
+    profile_image: String,
+    user_type: String,
+    is_verified: Boolean,
+    is_active: Boolean,
+    otp: String,
+    otp_expiry: Date
+  },
+  {
+    timestamps: true
+  }
+);
+
+const Admin = mongoose.model("Admin", adminSchema);
 /* ================= OTP EMAIL ================= */
 const sendOTP = async (email, otp) => {
   await sendEmail({
@@ -954,7 +976,201 @@ app.post("/admin/todo/mark", async (req, res) => {
     res.status(500).json({ status: "error" });
   }
 });
+app.post("/admin/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
 
+    // ===============================
+    // VALIDATION
+    // ===============================
+
+    if (!username || !password) {
+      return res.json({
+        status: "missing_fields",
+        message: "Username and password are required"
+      });
+    }
+
+    // ===============================
+    // FIND ADMIN
+    // ===============================
+
+    const admin = await Admin.findOne({
+      username: username
+    });
+
+    if (!admin) {
+      return res.json({
+        status: "invalid_credentials",
+        message: "Invalid username or password"
+      });
+    }
+
+    // ===============================
+    // CHECK PASSWORD
+    // ===============================
+
+    const passwordMatch = await bcrypt.compare(
+      password,
+      admin.password
+    );
+
+    if (!passwordMatch) {
+      return res.json({
+        status: "invalid_credentials",
+        message: "Invalid username or password"
+      });
+    }
+
+    // ===============================
+    // CHECK ACCOUNT STATUS
+    // ===============================
+
+    if (!admin.is_active) {
+      return res.json({
+        status: "account_inactive",
+        message: "Admin account is inactive"
+      });
+    }
+
+    // ===============================
+    // CHECK EMAIL VERIFICATION
+    // ===============================
+
+    if (!admin.is_verified) {
+
+      return res.json({
+        status: "otp_required",
+        email: admin.email
+      });
+    }
+
+    // ===============================
+    // CREATE ADMIN JWT
+    // ===============================
+
+    const token = jwt.sign(
+      {
+        id: admin._id,
+        role: admin.user_type,
+        admin: true
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: "7d"
+      }
+    );
+
+    // ===============================
+    // LOGIN SUCCESS
+    // ===============================
+
+    return res.json({
+      status: "login_success",
+      token,
+      admin: {
+        id: admin._id,
+        username: admin.username,
+        email: admin.email,
+        first_name: admin.first_name,
+        last_name: admin.last_name,
+        phone: admin.phone,
+        profile_image: admin.profile_image,
+        user_type: admin.user_type,
+        is_verified: admin.is_verified,
+        is_active: admin.is_active
+      }
+    });
+
+  } catch (error) {
+
+    console.error("Admin login error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Server error"
+    });
+  }
+});
+
+app.post("/admin/create-rider", async (req, res) => {
+  try {
+    const {
+      username,
+      email,
+      password,
+      first_name,
+      last_name,
+      phone,
+      profile_image
+    } = req.body;
+
+    if (
+      !username ||
+      !email ||
+      !password ||
+      !first_name ||
+      !last_name ||
+      !phone
+    ) {
+      return res.json({
+        status: "missing_fields"
+      });
+    }
+
+    const existingUser = await User.findOne({ email });
+
+    if (existingUser) {
+      return res.json({
+        status: "user_exists"
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const rider = await User.create({
+      username,
+      email,
+      password: hashedPassword,
+      first_name,
+      last_name,
+      phone,
+      profile_image: profile_image || "",
+      user_type: "rider",
+
+      is_rider_approved: false,
+      is_verified: false,
+      is_active: true,
+
+      otp: null,
+      otp_expiry: null
+    });
+
+    console.log("✅ Rider created:", rider.email);
+
+    return res.json({
+      status: "rider_created",
+      rider: {
+        id: rider._id,
+        username: rider.username,
+        email: rider.email,
+        first_name: rider.first_name,
+        last_name: rider.last_name,
+        user_type: rider.user_type,
+        is_verified: rider.is_verified,
+        is_rider_approved: rider.is_rider_approved,
+        is_active: rider.is_active
+      }
+    });
+
+  } catch (err) {
+    console.error("❌ Create rider error:", err);
+
+    return res.status(500).json({
+      status: "error"
+    });
+  }
+});
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
