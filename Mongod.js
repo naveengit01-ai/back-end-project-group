@@ -578,7 +578,53 @@ app.post("/resend-donate-otp", async (req, res) => {
     res.status(500).json({ status: "error" });
   }
 });
+app.post("/resend-otp", async (req, res) => {
+  try {
+    const { email } = req.body;
 
+    if (!email) {
+      return res.json({
+        status: "missing_email"
+      });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.json({
+        status: "not_found"
+      });
+    }
+
+    if (user.is_verified) {
+      return res.json({
+        status: "already_verified"
+      });
+    }
+
+    const otp = generateOTP();
+
+    user.otp = otp;
+    user.otp_expiry = new Date(
+      Date.now() + 10 * 60 * 1000
+    );
+
+    await user.save();
+
+    await sendOTP(email, otp);
+
+    return res.json({
+      status: "otp_resent"
+    });
+
+  } catch (err) {
+    console.error("❌ Resend OTP error:", err);
+
+    return res.status(500).json({
+      status: "error"
+    });
+  }
+});
 app.post("/verify-donate-otp", async (req, res) => {
   const { donation_id, otp, rider_email } = req.body;
 
