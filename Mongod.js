@@ -18,9 +18,14 @@ const AdminTodo = require("./models/AdminToDo");
 const app = express();
 
 /* ================= MIDDLEWARE ================= */
+const corsOptions = {
+  origin: "https://dwjd.vercel.app",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
-app.use(cors());
-app.options("*", cors());
 app.use("/ai", aiRoutes);
 
 /* ================= DATABASE ================= */
@@ -156,9 +161,10 @@ app.post("/signup", async (req, res) => {
     await sendOTP(email, otp);
 
     res.json({ status: "signup_success_otp_sent" });
-  } catch {
-    res.status(500).json({ status: "error" });
-  }
+  } catch (err) {
+  console.error("❌ Signup error:", err);
+  res.status(500).json({ status: "error" });
+}
 });
 
 app.post("/verify-otp", async (req, res) => {
