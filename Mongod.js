@@ -1157,6 +1157,59 @@ app.patch("/admin/admins/:adminId/status", async (req, res) => {
     });
   }
 });
+
+// ==========================================
+// GET COMBINED ADMIN DIRECTORY
+// ==========================================
+
+app.get("/admin/dashboard/directory", async (req, res) => {
+  try {
+    const [users, admins, riders] = await Promise.all([
+      User.find({})
+        .select("-password -otp -otp_expiry")
+        .sort({ createdAt: -1 })
+        .lean(),
+
+      Admin.find({})
+        .select("-password -otp -otp_expiry")
+        .sort({ createdAt: -1 })
+        .lean(),
+
+      BecomeRider.find({})
+        .select("-password -otp -otp_expiry")
+        .sort({ createdAt: -1 })
+        .lean(),
+    ]);
+
+    return res.status(200).json({
+      status: "success",
+      message: "Directory fetched successfully.",
+      data: { users, admins, riders },
+      counts: {
+        users: users.length,
+        admins: admins.length,
+        riders: riders.length,
+        total: users.length + admins.length + riders.length,
+      },
+    });
+  } catch (error) {
+    console.error("Admin Directory API Error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Failed to fetch directory.",
+    });
+  }
+});
+
+// TEMPORARY DEPLOYMENT DIAGNOSTIC
+app.get("/admin/dashboard/route-check", (req, res) => {
+  return res.status(200).json({
+    status: "success",
+    message: "Latest DWJD backend deployment is running.",
+    route: "/admin/dashboard/route-check",
+  });
+});
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
