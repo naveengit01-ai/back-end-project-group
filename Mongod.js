@@ -1101,6 +1101,62 @@ app.get("/admin/admins", async (req, res) => {
     });
   }
 });
+
+// PATCH: Activate or deactivate an admin
+app.patch("/admin/admins/:adminId/status", async (req, res) => {
+  try {
+    const { adminId } = req.params;
+    const { is_active } = req.body;
+
+    // Validate admin ID
+    if (!mongoose.Types.ObjectId.isValid(adminId)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid admin ID.",
+      });
+    }
+
+    // Validate status
+    if (typeof is_active !== "boolean") {
+      return res.status(400).json({
+        status: "error",
+        message: "is_active must be true or false.",
+      });
+    }
+
+    // Find admin
+    const admin = await Admin.findById(adminId);
+
+    if (!admin) {
+      return res.status(404).json({
+        status: "error",
+        message: "Admin not found.",
+      });
+    }
+
+    // Update status
+    admin.is_active = is_active;
+    await admin.save();
+
+    return res.status(200).json({
+      status: "success",
+      message: `Admin ${is_active ? "activated" : "deactivated"} successfully.`,
+      admin: {
+        _id: admin._id,
+        username: admin.username,
+        email: admin.email,
+        is_active: admin.is_active,
+      },
+    });
+  } catch (error) {
+    console.error("Update Admin Status Error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Failed to update admin status.",
+    });
+  }
+});
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
