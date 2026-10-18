@@ -883,8 +883,6 @@ function escapeHtml(value = "") {
    CREATE ADMIN ACCOUNT API
 ================================================= */
 
-const crypto = require("crypto");
-
 app.post("/admin/create-admin", async (req, res) => {
   try {
     const {
