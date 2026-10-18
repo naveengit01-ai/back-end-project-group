@@ -53,7 +53,112 @@ mongoose
     console.error("❌ MongoDB Error:", err.message);
     process.exit(1);
   });
+// ============================================
+// ADMIN REPORT AUTHENTICATION
+// ============================================
 
+const requireGMForReports = async (req, res, next) => {
+  try {
+    const authorization = req.headers.authorization;
+
+    if (
+      !authorization ||
+      !authorization.startsWith("Bearer ")
+    ) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Please log in as an administrator.",
+      });
+    }
+
+    const token = authorization.slice(7).trim();
+
+    if (!token) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Authentication token is missing.",
+      });
+    }
+
+    // Verify the token using the same secret as admin login.
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
+
+    if (!decoded.id || decoded.admin !== true) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Invalid administrator session.",
+      });
+    }
+
+    // Fetch the current admin record from MongoDB.
+    // Do not rely exclusively on the role stored in the JWT.
+    const admin = await Admin.findById(decoded.id)
+      .select("-password -otp -otp_expiry")
+      .lean();
+
+    if (!admin) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Administrator account not found.",
+      });
+    }
+
+    if (!admin.is_active) {
+      return res.status(403).json({
+        status: "forbidden",
+        message: "Your administrator account is inactive.",
+      });
+    }
+
+    // Check the current database role and assigned roles.
+    const assignedRoles = Array.isArray(admin.roles)
+      ? admin.roles.map((role) =>
+          String(role).toLowerCase()
+        )
+      : [];
+
+    const isGM =
+      String(admin.user_type || "").toLowerCase() === "gm" ||
+      assignedRoles.includes("gm");
+
+    if (!isGM) {
+      return res.status(403).json({
+        status: "forbidden",
+        message:
+          "Only the General Manager can access organization reports.",
+      });
+    }
+
+    req.reportAdmin = {
+      id: String(admin._id),
+      username: admin.username,
+      roles: assignedRoles,
+    };
+
+    return next();
+  } catch (error) {
+    if (
+      error.name === "TokenExpiredError" ||
+      error.name === "JsonWebTokenError" ||
+      error.name === "NotBeforeError"
+    ) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Your session is invalid or has expired.",
+      });
+    }
+
+    console.error("GM reports authentication error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to verify administrator access.",
+    });
+  }
+};
 /* ================= UTIL ================= */
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
@@ -1210,6 +1315,884 @@ app.get("/admin/dashboard/route-check", (req, res) => {
     route: "/admin/dashboard/route-check",
   });
 });
+
+// ============================================
+// DWJD - COMPLETE ADMIN CSV REPORT EXPORTS
+// ============================================
+
+const REPORT_EXPORTS = {
+  users: {
+    model: User,
+    filename: "dwjd-registered-users.csv",
+    accountType: "registered_user",
+  },
+
+  donations: {
+    model: Donation,
+    filename: "dwjd-donations.csv",
+    accountType: null,
+  },
+
+  riders: {
+    // Actual rider accounts are stored in User.
+    model: User,
+    filename: "dwjd-riders.csv",
+    accountType: "rider",
+    filter: { user_type: "rider" },
+  },
+
+  "rider-requests": {
+    model: BecomeRider,
+    filename: "dwjd-rider-requests.csv",
+    accountType: null,
+  },
+
+  admins: {
+    model: Admin,
+    filename: "dwjd-administrators.csv",
+    accountType: null,
+  },
+};
+
+// Fields that must never appear in CSV exports.
+const REPORT_PRIVATE_FIELDS = new Set([
+  "username",
+  "password",
+  "confirm_password",
+  "otp",
+  "otp_expiry",
+  "resetPasswordToken",
+  "resetPasswordExpires",
+  "passwordResetToken",
+  "passwordResetExpires",
+  "refreshToken",
+  "accessToken",
+  "token",
+  "__v",
+]);
+
+// Convert database values into readable CSV values.
+const reportCSVValue = (value) => {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (Array.isArray(value)) {
+    value = value
+      .map((item) =>
+        typeof item === "object" && item !== null
+          ? JSON.stringify(item)
+          : String(item)
+      )
+      .join("; ");
+  } else if (
+    typeof value === "object" &&
+    value !== null
+  ) {
+    value = JSON.stringify(value);
+  }
+
+  let text = String(value);
+
+  // Prevent CSV formula injection when opening files
+  // in Excel or similar spreadsheet applications.
+  if (/^[\s]*[=+\-@]/.test(text)) {
+    text = `'${text}`;
+  }
+
+  // Escape embedded double quotes.
+  return `"${text.replace(/"/g, '""')}"`;
+};
+
+const buildReportCSV = (records) => {
+  if (!records.length) {
+    return "No records found.\r\n";
+  }
+
+  // Union of record fields, excluding sensitive fields.
+  const columns = [
+    ...new Set(
+      records.flatMap((record) => Object.keys(record))
+    ),
+  ].filter(
+    (field) => !REPORT_PRIVATE_FIELDS.has(field)
+  );
+
+  const header = columns
+    .map((column) => reportCSVValue(column))
+    .join(",");
+
+  const rows = records.map((record) =>
+    columns
+      .map((column) => reportCSVValue(record[column]))
+      .join(",")
+  );
+
+  return [header, ...rows].join("\r\n") + "\r\n";
+};
+
+// GET /admin/reports/export/:type
+app.get(
+  "/admin/reports/export/:type",
+  requireGMForReports,
+  async (req, res) => {
+    try {
+      const type = req.params.type;
+      const config = REPORT_EXPORTS[type];
+
+      if (!config) {
+        return res.status(400).json({
+          status: "error",
+          message: "Unsupported report type.",
+        });
+      }
+
+      let query = config.filter || {};
+
+      // Distinguish regular users from rider accounts.
+      if (type === "users") {
+        query = { user_type: "user" };
+      }
+
+      const records = await config.model
+        .find(query)
+        .select(
+          "-password -username -otp -otp_expiry -resetPasswordToken -resetPasswordExpires -passwordResetToken -passwordResetExpires -refreshToken -accessToken -token -__v"
+        )
+        .sort({ createdAt: -1 })
+        .lean();
+
+      const csv = buildReportCSV(records);
+
+      res.setHeader(
+        "Content-Type",
+        "text/csv; charset=utf-8"
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${config.filename}"`
+      );
+
+      res.setHeader(
+        "Cache-Control",
+        "no-store, no-cache, must-revalidate, private"
+      );
+
+      // UTF-8 BOM helps Excel display text correctly.
+      return res.status(200).send("\uFEFF" + csv);
+    } catch (error) {
+      console.error(
+        "Admin CSV export error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to export this report.",
+      });
+    }
+  }
+);
+// ============================================
+// DWJD - ADMIN REPORTS OVERVIEW
+// GET /admin/reports/overview
+// ============================================
+
+app.get(
+  "/admin/reports/overview",
+  requireGMForReports,
+  async (req, res) => {
+    try {
+      const [
+        totalUsers,
+        totalRiders,
+        totalDonations,
+        totalRiderRequests,
+        totalAdmins,
+        totalActiveAdmins,
+      ] = await Promise.all([
+        // Registered users excluding rider accounts
+        User.countDocuments({
+          user_type: "user",
+        }),
+
+        // Actual rider accounts
+        User.countDocuments({
+          user_type: "rider",
+        }),
+
+        // Donation records
+        Donation.countDocuments({}),
+
+        // Rider applications
+        BecomeRider.countDocuments({}),
+
+        // Administrator accounts
+        Admin.countDocuments({}),
+
+        // Active administrator accounts
+        Admin.countDocuments({
+          is_active: true,
+        }),
+      ]);
+
+      return res.status(200).json({
+        status: "success",
+        message: "Reports overview retrieved successfully.",
+
+        stats: {
+          users: totalUsers,
+          riders: totalRiders,
+          donations: totalDonations,
+          riderRequests: totalRiderRequests,
+          admins: totalAdmins,
+          activeAdmins: totalActiveAdmins,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Admin Reports Overview Error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to retrieve reports overview.",
+      });
+    }
+  }
+);
+
+// ============================================
+// RIDER MANAGEMENT AUTHORIZATION
+// ============================================
+
+const requireRiderManagementAccess = async (req, res, next) => {
+  try {
+    const authorization = req.headers.authorization;
+
+    if (!authorization?.startsWith("Bearer ")) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Please log in as an administrator.",
+      });
+    }
+
+    const token = authorization.slice(7).trim();
+
+    if (!token) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Authentication token is missing.",
+      });
+    }
+
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
+
+    if (!decoded.id || decoded.admin !== true) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Invalid administrator session.",
+      });
+    }
+
+    const admin = await Admin.findById(decoded.id)
+      .select("-password -otp -otp_expiry")
+      .lean();
+
+    if (!admin) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Administrator account not found.",
+      });
+    }
+
+    if (!admin.is_active) {
+      return res.status(403).json({
+        status: "forbidden",
+        message: "Your administrator account is inactive.",
+      });
+    }
+
+    const roles = Array.isArray(admin.roles)
+      ? admin.roles.map((role) =>
+          String(role).toLowerCase()
+        )
+      : [];
+
+    const userType = String(
+      admin.user_type || ""
+    ).toLowerCase();
+
+    const permitted =
+      userType === "gm" ||
+      roles.includes("gm") ||
+      roles.includes("customersupport");
+
+    if (!permitted) {
+      return res.status(403).json({
+        status: "forbidden",
+        message:
+          "You do not have permission to manage rider requests.",
+      });
+    }
+
+    req.riderManager = {
+      id: String(admin._id),
+      username: admin.username,
+      roles,
+      userType,
+    };
+
+    return next();
+  } catch (error) {
+    if (
+      error.name === "JsonWebTokenError" ||
+      error.name === "TokenExpiredError" ||
+      error.name === "NotBeforeError"
+    ) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Your session is invalid or has expired.",
+      });
+    }
+
+    console.error("Rider authorization error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to verify administrator permissions.",
+    });
+  }
+};
+
+// ============================================
+// GET RIDER REQUESTS
+// GET /admin/rider-requests
+// ============================================
+
+app.get(
+  "/admin/rider-requests",
+  requireRiderManagementAccess,
+  async (req, res) => {
+    try {
+      const requests = await BecomeRider.find({})
+        .populate(
+          "reviewed_by",
+          "username first_name last_name"
+        )
+        .populate(
+          "created_user_id",
+          "first_name last_name email user_type"
+        )
+        .sort({ createdAt: -1 })
+        .lean();
+
+      return res.status(200).json({
+        status: "success",
+        message: "Rider requests retrieved successfully.",
+        count: requests.length,
+        requests,
+      });
+    } catch (error) {
+      console.error("Get rider requests error:", error);
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to retrieve rider requests.",
+      });
+    }
+  }
+);
+
+// ============================================
+// REVIEW RIDER REQUEST
+// PATCH /admin/rider-requests/:requestId/status
+// ============================================
+
+app.patch(
+  "/admin/rider-requests/:requestId/status",
+  requireRiderManagementAccess,
+  async (req, res) => {
+    try {
+      const { requestId } = req.params;
+      const { status, rejection_reason } = req.body;
+
+      if (!mongoose.Types.ObjectId.isValid(requestId)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid rider request ID.",
+        });
+      }
+
+      if (!["approved", "rejected"].includes(status)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Status must be approved or rejected.",
+        });
+      }
+
+      if (
+        status === "rejected" &&
+        !String(rejection_reason || "").trim()
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Please provide a reason for rejection.",
+        });
+      }
+
+      // Update only applications that have not already
+      // been approved, rejected, or converted into accounts.
+      const updatedRequest = await BecomeRider.findOneAndUpdate(
+        {
+          _id: requestId,
+          status: {
+            $in: ["pending", "under_review"],
+          },
+        },
+        {
+          $set: {
+            status,
+            reviewed_by: req.riderManager.id,
+            reviewed_at: new Date(),
+            rejection_reason:
+              status === "rejected"
+                ? String(rejection_reason).trim()
+                : "",
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        }
+      );
+
+      if (!updatedRequest) {
+        const existingRequest =
+          await BecomeRider.findById(requestId);
+
+        if (!existingRequest) {
+          return res.status(404).json({
+            status: "error",
+            message: "Rider request not found.",
+          });
+        }
+
+        return res.status(409).json({
+          status: "error",
+          message:
+            `This request cannot be reviewed because its current status is "${existingRequest.status}".`,
+        });
+      }
+
+      return res.status(200).json({
+        status: "success",
+        message:
+          status === "approved"
+            ? "Rider request approved successfully."
+            : "Rider request rejected successfully.",
+        request: updatedRequest,
+      });
+    } catch (error) {
+      console.error("Review rider request error:", error);
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to update rider request.",
+      });
+    }
+  }
+);
+
+// ============================================
+// CREATE RIDER ACCOUNT FROM APPROVED REQUEST
+// POST /admin/rider-requests/:requestId/create-account
+// ============================================
+
+app.post(
+  "/admin/rider-requests/:requestId/create-account",
+  requireRiderManagementAccess,
+  async (req, res) => {
+    let createdUserId = null;
+
+    try {
+      // ============================================
+      // 1. VALIDATE REQUEST ID
+      // ============================================
+
+      const { requestId } = req.params;
+
+      if (!mongoose.Types.ObjectId.isValid(requestId)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid rider request ID.",
+        });
+      }
+
+      // ============================================
+      // 2. FIND RIDER APPLICATION
+      // ============================================
+
+      const riderRequest = await BecomeRider.findById(requestId);
+
+      if (!riderRequest) {
+        return res.status(404).json({
+          status: "error",
+          message: "Rider request not found.",
+        });
+      }
+
+      // ============================================
+      // 3. CHECK WHETHER ACCOUNT ALREADY EXISTS
+      // ============================================
+
+      if (riderRequest.status === "account_created") {
+        return res.status(409).json({
+          status: "error",
+          message: "A rider account has already been created.",
+          rider_id: riderRequest.created_user_id,
+        });
+      }
+
+      // ============================================
+      // 4. REQUIRE APPROVAL
+      // ============================================
+
+      if (riderRequest.status !== "approved") {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "Approve the rider request before creating an account.",
+        });
+      }
+
+      const email = riderRequest.email.trim().toLowerCase();
+
+      // ============================================
+      // 5. CHECK FOR EXISTING USER EMAIL
+      // ============================================
+
+      const existingUser = await User.findOne({ email });
+
+      if (existingUser) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "An account already exists with this email address. Review the existing account before proceeding.",
+        });
+      }
+
+      // ============================================
+      // 6. GENERATE A UNIQUE USERNAME
+      // ============================================
+
+      const emailPrefix = email
+        .split("@")[0]
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, "")
+        .slice(0, 20);
+
+      let username = emailPrefix || "rider";
+
+      let usernameExists = await User.exists({ username });
+
+      while (usernameExists) {
+        username = `${emailPrefix || "rider"}${crypto.randomInt(
+          1000,
+          100000
+        )}`;
+
+        usernameExists = await User.exists({ username });
+      }
+
+      // ============================================
+      // 7. GENERATE DEFAULT PASSWORD
+      // ============================================
+
+      const defaultPassword = crypto
+        .randomBytes(18)
+        .toString("base64url");
+
+      // Hash the password before storing it.
+      const hashedPassword = await bcrypt.hash(
+        defaultPassword,
+        12
+      );
+
+      // ============================================
+      // 8. CREATE RIDER IN USER COLLECTION
+      // ============================================
+
+      const rider = await User.create({
+        username,
+        email,
+        password: hashedPassword,
+
+        first_name: riderRequest.first_name,
+        last_name: riderRequest.last_name,
+        phone: riderRequest.phone,
+
+        user_type: "rider",
+
+        profile_image: "",
+        is_verified: false,
+        is_active: true,
+
+        otp: null,
+        otp_expiry: null,
+      });
+
+      createdUserId = rider._id;
+
+      // ============================================
+      // 9. LINK RIDER TO APPLICATION
+      // ============================================
+
+      const updatedRequest = await BecomeRider.findOneAndUpdate(
+        {
+          _id: requestId,
+          status: "approved",
+          created_user_id: null,
+        },
+        {
+          $set: {
+            status: "account_created",
+            created_user_id: rider._id,
+            account_created_at: new Date(),
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+        }
+      );
+
+      // If another operation changed the request,
+      // remove the account created by this operation.
+      if (!updatedRequest) {
+        await User.deleteOne({ _id: rider._id });
+
+        createdUserId = null;
+
+        return res.status(409).json({
+          status: "error",
+          message:
+            "The request changed during account creation. Refresh the page and try again.",
+        });
+      }
+
+      // ============================================
+      // 10. SEND LOGIN CREDENTIALS THROUGH EMAIL
+      // ============================================
+
+      try {
+        await sendEmail({
+          to: email,
+
+          subject: "Welcome to DWJD - Your Rider Account",
+
+          html: `
+            <!DOCTYPE html>
+            <html>
+              <body
+                style="
+                  margin: 0;
+                  padding: 24px;
+                  background: #f1f5f9;
+                  font-family: Arial, sans-serif;
+                  color: #1e293b;
+                "
+              >
+                <div
+                  style="
+                    max-width: 600px;
+                    margin: auto;
+                    overflow: hidden;
+                    background: #ffffff;
+                    border-radius: 14px;
+                    border: 1px solid #e2e8f0;
+                  "
+                >
+                  <div
+                    style="
+                      padding: 28px;
+                      text-align: center;
+                      background: #0f172a;
+                      color: #ffffff;
+                    "
+                  >
+                    <h1 style="margin: 0;">DWJD</h1>
+                    <p style="margin-bottom: 0;">
+                      Rider Account Created
+                    </p>
+                  </div>
+
+                  <div style="padding: 28px;">
+                    <h2>
+                      Hello ${escapeHtml(rider.first_name)},
+                    </h2>
+
+                    <p>
+                      Your DWJD rider account has been created
+                      successfully.
+                    </p>
+
+                    <div
+                      style="
+                        padding: 20px;
+                        background: #f8fafc;
+                        border: 1px solid #e2e8f0;
+                        border-radius: 10px;
+                      "
+                    >
+                      <p>
+                        <strong>Username:</strong>
+                        ${escapeHtml(rider.username)}
+                      </p>
+
+                      <p>
+                        <strong>Default password:</strong>
+                        ${escapeHtml(defaultPassword)}
+                      </p>
+
+                      <p>
+                        <strong>Account type:</strong>
+                        Rider
+                      </p>
+                    </div>
+
+                    <p style="margin-top: 24px;">
+                      Keep your login credentials confidential.
+                      Change your default password after signing in.
+                    </p>
+
+                    <p>
+                      Your account may require email verification
+                      before you can log in.
+                    </p>
+
+                    <p>
+                      Regards,<br />
+                      <strong>DWJD Team</strong>
+                    </p>
+                  </div>
+                </div>
+              </body>
+            </html>
+          `,
+        });
+
+        // ============================================
+        // 11. SUCCESS RESPONSE
+        // ============================================
+
+        return res.status(201).json({
+          status: "rider_created",
+
+          message:
+            "Rider account created successfully. Login credentials have been emailed.",
+
+          rider: {
+            id: rider._id,
+            username: rider.username,
+            email: rider.email,
+            first_name: rider.first_name,
+            last_name: rider.last_name,
+            user_type: rider.user_type,
+          },
+
+          request: {
+            id: updatedRequest._id,
+            status: updatedRequest.status,
+          },
+
+          email_sent: true,
+        });
+      } catch (emailError) {
+        // The account already exists and is linked.
+        // Do not delete it or create another account.
+
+        console.error(
+          "Rider credentials email failed:",
+          emailError.message
+        );
+
+        return res.status(201).json({
+          status: "rider_created_email_failed",
+
+          message:
+            "The rider account was created, but the credentials email could not be sent. Use a secure password-reset process to restore access.",
+
+          rider: {
+            id: rider._id,
+            username: rider.username,
+            email: rider.email,
+            first_name: rider.first_name,
+            last_name: rider.last_name,
+            user_type: rider.user_type,
+          },
+
+          request: {
+            id: updatedRequest._id,
+            status: updatedRequest.status,
+          },
+
+          email_sent: false,
+        });
+      }
+    } catch (error) {
+      // ============================================
+      // 12. HANDLE UNEXPECTED ERRORS
+      // ============================================
+
+      console.error("Create rider account error:", error);
+
+      // Best-effort cleanup if the account was created
+      // but was not linked to the application.
+      if (createdUserId) {
+        try {
+          const linkedRequest = await BecomeRider.findOne({
+            created_user_id: createdUserId,
+            status: "account_created",
+          });
+
+          if (!linkedRequest) {
+            await User.deleteOne({
+              _id: createdUserId,
+            });
+          }
+        } catch (cleanupError) {
+          console.error(
+            "Rider account cleanup error:",
+            cleanupError
+          );
+        }
+      }
+
+      if (error.code === 11000) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "An account with this email or username already exists.",
+        });
+      }
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to create the rider account.",
+      });
+    }
+  }
+);
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
