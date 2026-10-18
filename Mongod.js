@@ -1075,6 +1075,32 @@ app.post("/admin/create-admin", async (req, res) => {
   }
 });
 
+/* ============================================
+   GET ALL ADMIN ACCOUNTS
+   GET /admin/admins
+============================================ */
+
+app.get("/admin/admins", async (req, res) => {
+  try {
+    const admins = await Admin.find({})
+      .select("-password -otp -otp_expiry")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.status(200).json({
+      status: "success",
+      count: admins.length,
+      admins,
+    });
+  } catch (error) {
+    console.error("Get admins error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to retrieve administrator accounts.",
+    });
+  }
+});
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
