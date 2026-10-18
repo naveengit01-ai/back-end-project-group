@@ -1,88 +1,88 @@
+const mongoose = require("mongoose");
 
 const adminSchema = new mongoose.Schema(
   {
     username: {
       type: String,
       required: true,
-      unique: true
+      unique: true,
     },
 
     email: {
       type: String,
       required: true,
-      unique: true
+      unique: true,
     },
 
     password: {
       type: String,
-      required: true
+      required: true,
     },
 
     first_name: {
       type: String,
-      required: true
+      required: true,
     },
 
     last_name: {
       type: String,
-      required: true
+      required: true,
     },
 
     phone: {
       type: String,
       required: true,
-      unique: true
+      unique: true,
     },
 
     profile_image: {
       type: String,
-      default: ""
+      default: "",
     },
 
     user_type: {
       type: String,
-      required: true
+      required: true,
     },
 
     role: {
-  type: String,
-  enum: [
-    "gm",
-    "customersupport",
-    "marketing",
-    "finance",
-    "operations",
-    "hr",
-    "admin"
-  ],
-  default: "customersupport",
-  required: true
-},
+      type: String,
+      enum: [
+        "gm",
+        "customersupport",
+        "marketing",
+        "finance",
+        "operations",
+        "hr",
+        "admin",
+      ],
+      default: "customersupport",
+      required: true,
+    },
 
     is_verified: {
       type: Boolean,
-      default: false
+      default: false,
     },
 
     is_active: {
       type: Boolean,
-      default: true
+      default: true,
     },
 
     otp: {
       type: String,
-      default: null
+      default: null,
     },
 
     otp_expiry: {
       type: Date,
-      default: null
-    }
+      default: null,
+    },
   },
   {
-    timestamps: true
+    timestamps: true,
   }
 );
 
-const Admin = mongoose.model("Admin", adminSchema);
-
+module.exports = mongoose.model("Admin", adminSchema);
