@@ -1,3 +1,4 @@
+
 const adminSchema = new mongoose.Schema(
   {
     username: {
@@ -43,6 +44,13 @@ const adminSchema = new mongoose.Schema(
       required: true
     },
 
+    role: {
+      type: String,
+      required: true,
+      enum: ["customersupport","admin"],
+      default: "customersupport"
+    },
+
     is_verified: {
       type: Boolean,
       default: false
@@ -69,3 +77,4 @@ const adminSchema = new mongoose.Schema(
 );
 
 const Admin = mongoose.model("Admin", adminSchema);
+

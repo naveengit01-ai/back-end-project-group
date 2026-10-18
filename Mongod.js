@@ -15,6 +15,7 @@ const Notification = require("./models/Notification");
 const YoutubeContent = require("./models/YoutubeContent");
 const aiRoutes = require("./routes/ai");
 const AdminTodo = require("./models/AdminToDo");
+const BecomeRider = require("./models/BecomeRider");
 const app = express();
 
 /* ================= MIDDLEWARE ================= */
@@ -1238,6 +1239,385 @@ app.post("/admin/create-rider", async (req, res) => {
     });
   }
 });
+// ==========================================
+// BECOME RIDER: VERIFY EMAIL ELIGIBILITY
+// ==========================================
+
+app.post("/rider/verify-email", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({
+        status: "missing_email",
+        message: "Please enter your email address.",
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // Basic email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailRegex.test(normalizedEmail)) {
+      return res.status(400).json({
+        status: "invalid_email",
+        message: "Please enter a valid email address.",
+      });
+    }
+
+    // Check whether this email already belongs to a rider
+    const existingRider = await User.findOne({
+      email: normalizedEmail,
+      user_type: "rider",
+    });
+
+    if (existingRider) {
+      return res.status(409).json({
+        status: "rider_already_exists",
+        message: "A rider account already exists for this email address.",
+      });
+    }
+
+    // Check for an existing request
+    const existingRequest = await BecomeRider.findOne({
+      email: normalizedEmail,
+      status: {
+        $in: ["pending", "under_review", "approved"],
+      },
+    });
+
+    if (existingRequest) {
+      return res.status(409).json({
+        status: "request_already_exists",
+        message:
+          "A rider account request already exists for this email address.",
+      });
+    }
+
+    return res.status(200).json({
+      status: "email_eligible",
+      message: "You can continue with your rider account request.",
+    });
+  } catch (error) {
+    console.error("Rider email verification error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to verify your email right now.",
+    });
+  }
+});
+// ==========================================
+// BECOME RIDER: SUBMIT ACCOUNT REQUEST
+// ==========================================
+
+app.post("/rider/request-account", async (req, res) => {
+  try {
+    const {
+      first_name,
+      last_name,
+      email,
+      phone,
+    } = req.body;
+
+    // ======================================
+    // 1. VALIDATE REQUIRED FIELDS
+    // ======================================
+
+    if (
+      !first_name?.trim() ||
+      !last_name?.trim() ||
+      !email?.trim() ||
+      !phone?.trim()
+    ) {
+      return res.status(400).json({
+        status: "missing_fields",
+        message: "Please fill in all required fields.",
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const normalizedFirstName = first_name.trim();
+    const normalizedLastName = last_name.trim();
+    const normalizedPhone = phone.trim();
+
+    // ======================================
+    // 2. VALIDATE EMAIL
+    // ======================================
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailRegex.test(normalizedEmail)) {
+      return res.status(400).json({
+        status: "invalid_email",
+        message: "Please enter a valid email address.",
+      });
+    }
+
+    // ======================================
+    // 3. VALIDATE MOBILE NUMBER
+    // ======================================
+
+    // Accept international formats such as +919876543210.
+    const normalizedPhoneDigits = normalizedPhone.replace(/[\s()-]/g, "");
+
+    if (!/^\+?\d{10,15}$/.test(normalizedPhoneDigits)) {
+      return res.status(400).json({
+        status: "invalid_phone",
+        message: "Please enter a valid mobile number.",
+      });
+    }
+
+    // ======================================
+    // 4. CHECK EXISTING RIDER ACCOUNT
+    // ======================================
+
+    const existingRider = await User.findOne({
+      email: normalizedEmail,
+      user_type: "rider",
+    });
+
+    if (existingRider) {
+      return res.status(409).json({
+        status: "rider_already_exists",
+        message:
+          "A rider account already exists for this email address.",
+      });
+    }
+
+    // ======================================
+    // 5. CHECK EXISTING REQUEST
+    // ======================================
+
+    const existingRequest = await BecomeRider.findOne({
+      email: normalizedEmail,
+      status: {
+        $in: ["pending", "under_review", "approved"],
+      },
+    });
+
+    if (existingRequest) {
+      return res.status(409).json({
+        status: "request_already_exists",
+        message:
+          "Your rider account request has already been submitted.",
+      });
+    }
+
+    // ======================================
+    // 6. SAVE REQUEST TO MONGODB
+    // ======================================
+
+    const riderRequest = await BecomeRider.create({
+      first_name: normalizedFirstName,
+      last_name: normalizedLastName,
+      email: normalizedEmail,
+      phone: normalizedPhoneDigits,
+
+      email_checked: true,
+
+      status: "pending",
+
+      reviewed_by: null,
+      reviewed_at: null,
+
+      rejection_reason: "",
+
+      created_user_id: null,
+      account_created_at: null,
+    });
+
+    console.log(
+      "New rider request received:",
+      riderRequest._id
+    );
+
+    // ======================================
+    // 7. SEND CONFIRMATION EMAIL
+    // ======================================
+
+    let emailSent = false;
+
+    try {
+      await sendEmail({
+        to: normalizedEmail,
+
+        subject:
+          "Your DWJD Rider Account Request Has Been Received",
+
+        html: `
+          <!DOCTYPE html>
+          <html>
+            <body style="
+              margin: 0;
+              padding: 0;
+              background-color: #f4f6f8;
+              font-family: Arial, sans-serif;
+            ">
+              <div style="
+                max-width: 600px;
+                margin: 30px auto;
+                background: #ffffff;
+                border-radius: 12px;
+                overflow: hidden;
+                border: 1px solid #e5e7eb;
+              ">
+                <div style="
+                  background: #111827;
+                  color: #ffffff;
+                  padding: 28px;
+                  text-align: center;
+                ">
+                  <h1 style="margin: 0;">
+                    DWJD
+                  </h1>
+
+                  <p style="margin-bottom: 0;">
+                    Rider Account Request
+                  </p>
+                </div>
+
+                <div style="padding: 30px;">
+                  <h2 style="color: #111827;">
+                    Hi ${escapeHtml(normalizedFirstName)},
+                  </h2>
+
+                  <p style="
+                    color: #4b5563;
+                    line-height: 1.7;
+                  ">
+                    Thank you for your interest in becoming
+                    a rider with DWJD!
+                  </p>
+
+                  <p style="
+                    color: #4b5563;
+                    line-height: 1.7;
+                  ">
+                    We have successfully received your
+                    rider account request.
+                  </p>
+
+                  <div style="
+                    background: #eff6ff;
+                    border-left: 4px solid #2563eb;
+                    padding: 16px;
+                    margin: 24px 0;
+                    border-radius: 6px;
+                  ">
+                    <h3 style="
+                      margin-top: 0;
+                      color: #1d4ed8;
+                    ">
+                      What happens next?
+                    </h3>
+
+                    <p style="
+                      color: #374151;
+                      line-height: 1.7;
+                      margin-bottom: 0;
+                    ">
+                      Our Customer Support team will review
+                      your request within 24 hours. We will
+                      contact you by email regarding the
+                      next steps.
+                    </p>
+                  </div>
+
+                  <p style="
+                    color: #4b5563;
+                    line-height: 1.7;
+                  ">
+                    Please keep an eye on your inbox for
+                    further updates.
+                  </p>
+
+                  <p style="
+                    color: #4b5563;
+                    line-height: 1.7;
+                  ">
+                    Thank you for your patience.
+                  </p>
+
+                  <p style="
+                    color: #111827;
+                    line-height: 1.7;
+                  ">
+                    Best regards,<br />
+                    <strong>DWJD Customer Support Team</strong>
+                  </p>
+                </div>
+
+                <div style="
+                  background: #f9fafb;
+                  padding: 16px;
+                  text-align: center;
+                  color: #6b7280;
+                  font-size: 12px;
+                ">
+                  This is an automated confirmation email
+                  from DWJD.
+                </div>
+              </div>
+            </body>
+          </html>
+        `,
+      });
+
+      emailSent = true;
+    } catch (emailError) {
+      // Keep the saved request even if the email fails.
+      console.error(
+        "Rider request confirmation email failed:",
+        emailError.message
+      );
+    }
+
+    // ======================================
+    // 8. RETURN SUCCESS RESPONSE
+    // ======================================
+
+    return res.status(201).json({
+      status: "request_submitted",
+
+      message:
+        "Your rider account request has been submitted successfully. Our Customer Support team will review your request within 24 hours.",
+
+      request_id: riderRequest._id,
+
+      email_sent: emailSent,
+    });
+  } catch (error) {
+    console.error("Become Rider request error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message:
+        "We could not submit your request right now. Please try again later.",
+    });
+  }
+});
+
+
+// ==========================================
+// HTML ESCAPING HELPER
+// ==========================================
+
+function escapeHtml(value = "") {
+  return String(value).replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+
+    return entities[character];
+  });
+}
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
