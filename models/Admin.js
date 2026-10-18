@@ -45,11 +45,19 @@ const adminSchema = new mongoose.Schema(
     },
 
     role: {
-      type: String,
-      required: true,
-      enum: ["customersupport","admin"],
-      default: "customersupport"
-    },
+  type: String,
+  enum: [
+    "gm",
+    "customersupport",
+    "marketing",
+    "finance",
+    "operations",
+    "hr",
+    "admin"
+  ],
+  default: "customersupport",
+  required: true
+},
 
     is_verified: {
       type: Boolean,
