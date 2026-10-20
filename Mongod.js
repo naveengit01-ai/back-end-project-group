@@ -2410,24 +2410,21 @@ app.post(
    GOOGLE DRIVE CONFIGURATION
 ========================================= */
 
-const googleAuth = new google.auth.GoogleAuth({
-  credentials: {
-    client_email: process.env.GOOGLE_CLIENT_EMAIL,
+const { google } = require("googleapis");
 
-    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(
-      /\\n/g,
-      "\n"
-    ),
-  },
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_OAUTH_CLIENT_ID,
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+  process.env.GOOGLE_OAUTH_REDIRECT_URI
+);
 
-  scopes: [
-    "https://www.googleapis.com/auth/drive",
-  ],
+oauth2Client.setCredentials({
+  refresh_token: process.env.GOOGLE_OAUTH_REFRESH_TOKEN,
 });
 
 const drive = google.drive({
   version: "v3",
-  auth: googleAuth,
+  auth: oauth2Client,
 });
 
 
