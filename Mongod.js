@@ -6,6 +6,10 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const crypto = require("crypto");
+
+const multer = require("multer");
+const { google } = require("googleapis");
+const { Readable } = require("stream");
 // Models
 const User = require("./models/User");
 const Donation = require("./models/Donation");
@@ -197,82 +201,293 @@ const sendOTP = async (email, otp) => {
    AUTH (USER & RIDER)
 ================================================= */
 
-app.post("/signup", async (req, res) => {
-  try {
-    const {
-      username,
-      first_name,
-      last_name,
-      phone,
-      email,
-      user_type,
-      password,
-      confirm_password,
-      latitude,
-      longitude,
-    } = req.body;
+/* =========================================
+   SIGNUP API
+   Google Drive + MongoDB + Email OTP
+========================================= */
 
-    if (
-      !username ||
-      !first_name ||
-      !last_name ||
-      !phone ||
-      !email ||
-      !user_type ||
-      !password ||
-      !confirm_password
-    )
-      return res.json({ status: "missing_fields" });
+app.post(
+  "/signup",
 
-    if (password !== confirm_password)
-      return res.json({ status: "password_mismatch" });
+  (req, res, next) => {
+    profileUpload.single("profile_image")(
+      req,
+      res,
+      (error) => {
+        if (!error) {
+          return next();
+        }
 
-    const existingUser = await User.findOne({ email });
+        if (error instanceof multer.MulterError) {
+          if (error.code === "LIMIT_FILE_SIZE") {
+            return res.status(413).json({
+              status: "file_too_large",
+              message: "Profile image cannot exceed 5 MB.",
+            });
+          }
 
-    if (existingUser) {
-      if (existingUser.is_verified)
-        return res.json({ status: "user_exists" });
+          return res.status(400).json({
+            status: "upload_error",
+            message: error.message,
+          });
+        }
+
+        return res.status(400).json({
+          status: "invalid_image",
+          message: error.message,
+        });
+      }
+    );
+  },
+
+  async (req, res) => {
+    let uploadedDriveFileId = null;
+    let createdUserId = null;
+
+    try {
+      const {
+        username,
+        first_name,
+        last_name,
+        phone,
+        email,
+        user_type,
+        password,
+        confirm_password,
+        latitude,
+        longitude,
+      } = req.body;
+
+      /* 1. Validate required fields */
+
+      if (
+        !username?.trim() ||
+        !first_name?.trim() ||
+        !last_name?.trim() ||
+        !phone?.trim() ||
+        !email?.trim() ||
+        !user_type ||
+        !password ||
+        !confirm_password
+      ) {
+        return res.status(400).json({
+          status: "missing_fields",
+          message: "Please complete all required fields.",
+        });
+      }
+
+      /* 2. Restrict public signup account types */
+
+      if (!["user", "rider"].includes(user_type)) {
+        return res.status(400).json({
+          status: "invalid_user_type",
+        });
+      }
+
+      /* 3. Validate username */
+
+      if (username.trim().length < 6) {
+        return res.status(400).json({
+          status: "invalid_username",
+          message: "Username must be at least 6 characters.",
+        });
+      }
+
+      /* 4. Validate password */
+
+      if (password !== confirm_password) {
+        return res.status(400).json({
+          status: "password_mismatch",
+        });
+      }
+
+      if (password.length < 8) {
+        return res.status(400).json({
+          status: "weak_password",
+          message: "Password must be at least 8 characters.",
+        });
+      }
+
+      /* 5. Normalize email */
+
+      const normalizedEmail = email.trim().toLowerCase();
+
+      /* 6. Check existing account */
+
+      const existingUser = await User.findOne({
+        email: normalizedEmail,
+      });
+
+      if (existingUser) {
+        if (existingUser.is_verified) {
+          return res.status(409).json({
+            status: "user_exists",
+          });
+        }
+
+        /*
+          Preserve the existing OTP resend behavior.
+          Don't upload another image for an existing account.
+        */
+
+        const otp = generateOTP();
+
+        existingUser.otp = otp;
+
+        existingUser.otp_expiry = new Date(
+          Date.now() + 10 * 60 * 1000
+        );
+
+        await existingUser.save();
+
+        await sendOTP(normalizedEmail, otp);
+
+        return res.json({
+          status: "otp_resent",
+        });
+      }
+
+      /* 7. Upload optional profile image */
+
+      let profileImageUrl = "";
+
+      if (req.file) {
+        const uploadedImage = await uploadProfileImage(
+          req.file,
+          user_type
+        );
+
+        uploadedDriveFileId = uploadedImage.fileId;
+        profileImageUrl = uploadedImage.url;
+      }
+
+      /* 8. Hash password */
+
+      const hashedPassword = await bcrypt.hash(
+        password,
+        10
+      );
+
+      /* 9. Generate OTP */
 
       const otp = generateOTP();
-      existingUser.otp = otp;
-      existingUser.otp_expiry = new Date(Date.now() + 10 * 60 * 1000);
-      await existingUser.save();
-      await sendOTP(email, otp);
-      return res.json({ status: "otp_resent" });
-    }
 
-    const otp = generateOTP();
-    const hashedPassword = await bcrypt.hash(password, 10);
+      /* 10. Prepare MongoDB document */
 
-    const userData = {
-      username,
-      first_name,
-      last_name,
-      phone,
-      email,
-      user_type,
-      password: hashedPassword,
-      otp,
-      otp_expiry: new Date(Date.now() + 10 * 60 * 1000),
-      is_verified: false,
-    };
+      const userData = {
+        username: username.trim(),
+        first_name: first_name.trim(),
+        last_name: last_name.trim(),
+        phone: phone.trim(),
+        email: normalizedEmail,
+        user_type,
 
-    if (user_type === "rider") {
-      userData.rider_location = {
-        lat: Number(latitude),
-        lng: Number(longitude),
+        password: hashedPassword,
+
+        profile_image: profileImageUrl,
+
+        otp,
+
+        otp_expiry: new Date(
+          Date.now() + 10 * 60 * 1000
+        ),
+
+        is_verified: false,
       };
+
+      if (user_type === "rider") {
+        userData.rider_location = {
+          lat: Number(latitude),
+          lng: Number(longitude),
+        };
+      }
+
+      /* 11. Create user */
+
+      const newUser = await User.create(userData);
+
+      createdUserId = newUser._id;
+
+      /* 12. Send OTP */
+
+      try {
+        await sendOTP(normalizedEmail, otp);
+      } catch (emailError) {
+        console.error(
+          "OTP email failed:",
+          emailError.message
+        );
+
+        /*
+          Remove the newly created, unverified account
+          if its verification email cannot be sent.
+        */
+
+        await User.deleteOne({
+          _id: newUser._id,
+          is_verified: false,
+        });
+
+        createdUserId = null;
+
+        if (uploadedDriveFileId) {
+          try {
+            await drive.files.delete({
+              fileId: uploadedDriveFileId,
+            });
+
+            uploadedDriveFileId = null;
+          } catch (cleanupError) {
+            console.error(
+              "Google Drive cleanup failed:",
+              cleanupError.message
+            );
+          }
+        }
+
+        return res.status(502).json({
+          status: "otp_email_failed",
+          message: "Unable to send your OTP email.",
+        });
+      }
+
+      /* 13. Return success */
+
+      return res.status(201).json({
+        status: "signup_success_otp_sent",
+
+        message: "OTP sent successfully.",
+
+        profile_image: profileImageUrl,
+      });
+    } catch (error) {
+      console.error("Signup error:", error);
+
+      /*
+        Clean up a Google Drive upload if the user
+        wasn't successfully created.
+      */
+
+      if (uploadedDriveFileId && !createdUserId) {
+        try {
+          await drive.files.delete({
+            fileId: uploadedDriveFileId,
+          });
+        } catch (cleanupError) {
+          console.error(
+            "Google Drive cleanup failed:",
+            cleanupError.message
+          );
+        }
+      }
+
+      return res.status(500).json({
+        status: "error",
+        message: "Signup failed. Please try again.",
+      });
     }
-
-    await User.create(userData);
-    await sendOTP(email, otp);
-
-    res.json({ status: "signup_success_otp_sent" });
-  } catch (err) {
-    console.error("❌ Signup error:", err);
-    res.status(500).json({ status: "error" });
   }
-});
+);
 
 app.post("/verify-otp", async (req, res) => {
   try {
@@ -2191,6 +2406,150 @@ app.post(
     }
   }
 );
+/* =========================================
+   GOOGLE DRIVE CONFIGURATION
+========================================= */
+
+const googleAuth = new google.auth.GoogleAuth({
+  credentials: {
+    client_email: process.env.GOOGLE_CLIENT_EMAIL,
+
+    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(
+      /\\n/g,
+      "\n"
+    ),
+  },
+
+  scopes: [
+    "https://www.googleapis.com/auth/drive",
+  ],
+});
+
+const drive = google.drive({
+  version: "v3",
+  auth: googleAuth,
+});
+
+
+/* =========================================
+   MULTER CONFIGURATION
+========================================= */
+
+const profileUpload = multer({
+  storage: multer.memoryStorage(),
+
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+    files: 1,
+  },
+
+  fileFilter: (req, file, callback) => {
+    const allowedTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ];
+
+    if (!allowedTypes.includes(file.mimetype)) {
+      return callback(
+        new Error(
+          "Only JPEG, PNG, and WEBP images are allowed."
+        )
+      );
+    }
+
+    callback(null, true);
+  },
+});
+
+
+/* =========================================
+   GOOGLE DRIVE UPLOAD FUNCTION
+========================================= */
+
+async function uploadProfileImage(file, userType) {
+  const folderId =
+    userType === "rider"
+      ? process.env.GOOGLE_DRIVE_RIDERS_FOLDER_ID
+      : process.env.GOOGLE_DRIVE_CUSTOMERS_FOLDER_ID;
+
+  if (!folderId) {
+    throw new Error(
+      `Google Drive folder ID is missing for ${userType}.`
+    );
+  }
+
+  const extensionByMimeType = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+  };
+
+  const extension = extensionByMimeType[file.mimetype];
+
+  if (!extension) {
+    throw new Error("Unsupported image format.");
+  }
+
+  const fileName =
+    `profile_${Date.now()}_${crypto.randomBytes(6).toString("hex")}.${extension}`;
+
+  const uploadedFile = await drive.files.create({
+    requestBody: {
+      name: fileName,
+      mimeType: file.mimetype,
+      parents: [folderId],
+    },
+
+    media: {
+      mimeType: file.mimetype,
+      body: Readable.from(file.buffer),
+    },
+
+    fields: "id, name",
+  });
+
+  const fileId = uploadedFile.data.id;
+
+  try {
+    /*
+      Public link access is enabled here so the URL can
+      be displayed directly in an HTML img element.
+
+      Only use this if public profile pictures are acceptable
+      for your application.
+    */
+
+    await drive.permissions.create({
+      fileId,
+
+      requestBody: {
+        type: "anyone",
+        role: "reader",
+      },
+    });
+
+    return {
+      fileId,
+
+      url:
+        `https://drive.google.com/uc?export=view&id=${fileId}`,
+    };
+  } catch (error) {
+    try {
+      await drive.files.delete({
+        fileId,
+      });
+    } catch (cleanupError) {
+      console.error(
+        "Google Drive cleanup failed:",
+        cleanupError.message
+      );
+    }
+
+    throw error;
+  }
+}
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
