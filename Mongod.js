@@ -44,8 +44,7 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json());
-app.use("/ai", aiRoutes);
+app.use(express.json());app.use("/ai", aiRoutes);
 
 /* ================= DATABASE ================= */
 mongoose
@@ -1185,6 +1184,13 @@ app.post("/rider/verify-email", async (req, res) => {
   }
 });
 
+// ======================================================
+// BECOME RIDER: SUBMIT ACCOUNT REQUEST
+// POST /rider/request-account
+//
+// Camera photo -> Google Drive -> MongoDB
+// ======================================================
+
 app.post("/rider/request-account", async (req, res) => {
   try {
     const {
@@ -1192,15 +1198,22 @@ app.post("/rider/request-account", async (req, res) => {
       last_name,
       email,
       phone,
-      profile_image,
-    } = req.body;
+      profile_image_data,
+    } = req.body || {};
 
-    // 1. Validate required fields
+    // ==================================================
+    // 1. VALIDATE REQUIRED FIELDS
+    // ==================================================
+
     if (
-      !first_name?.trim() ||
-      !last_name?.trim() ||
-      !email?.trim() ||
-      !phone?.trim()
+      typeof first_name !== "string" ||
+      typeof last_name !== "string" ||
+      typeof email !== "string" ||
+      typeof phone !== "string" ||
+      !first_name.trim() ||
+      !last_name.trim() ||
+      !email.trim() ||
+      !phone.trim()
     ) {
       return res.status(400).json({
         status: "missing_fields",
@@ -1208,13 +1221,15 @@ app.post("/rider/request-account", async (req, res) => {
       });
     }
 
-    // 2. Normalize input
-    const normalizedEmail = email.trim().toLowerCase();
     const normalizedFirstName = first_name.trim();
     const normalizedLastName = last_name.trim();
+    const normalizedEmail = email.trim().toLowerCase();
     const normalizedPhone = phone.trim();
 
-    // 3. Validate email
+    // ==================================================
+    // 2. VALIDATE EMAIL
+    // ==================================================
+
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     if (!emailRegex.test(normalizedEmail)) {
@@ -1224,8 +1239,16 @@ app.post("/rider/request-account", async (req, res) => {
       });
     }
 
-    // 4. Validate phone number
-    const normalizedPhoneDigits = normalizedPhone.replace(/[\s()-]/g, "");
+    // ==================================================
+    // 3. VALIDATE PHONE NUMBER
+    // ==================================================
+
+    // Supports international numbers such as +919876543210.
+
+    const normalizedPhoneDigits = normalizedPhone.replace(
+      /[\s()-]/g,
+      ""
+    );
 
     if (!/^\+?\d{10,15}$/.test(normalizedPhoneDigits)) {
       return res.status(400).json({
@@ -1234,54 +1257,73 @@ app.post("/rider/request-account", async (req, res) => {
       });
     }
 
-    // 5. Validate profile image URL
-    let normalizedProfileImage = "";
+    // ==================================================
+    // 4. VALIDATE CAMERA PHOTO DATA
+    // ==================================================
 
-    if (profile_image !== undefined && profile_image !== null) {
-      if (typeof profile_image !== "string") {
-        return res.status(400).json({
-          status: "invalid_profile_image",
-          message: "Profile image must be a valid URL.",
-        });
-      }
+    // The frontend sends:
+    // data:image/jpeg;base64,<BASE64_IMAGE_DATA>
 
-      normalizedProfileImage = profile_image.trim();
-
-      if (normalizedProfileImage.length > 2048) {
-        return res.status(400).json({
-          status: "invalid_profile_image",
-          message: "Profile image URL is too long.",
-        });
-      }
-
-      if (normalizedProfileImage) {
-        try {
-          const imageUrl = new URL(normalizedProfileImage);
-
-          const allowedHosts = [
-            "drive.google.com",
-            "lh3.googleusercontent.com",
-          ];
-
-          if (
-            imageUrl.protocol !== "https:" ||
-            !allowedHosts.includes(imageUrl.hostname)
-          ) {
-            return res.status(400).json({
-              status: "invalid_profile_image",
-              message: "Please provide a supported Google Drive image URL.",
-            });
-          }
-        } catch {
-          return res.status(400).json({
-            status: "invalid_profile_image",
-            message: "Please provide a valid profile image URL.",
-          });
-        }
-      }
+    if (
+      typeof profile_image_data !== "string" ||
+      !profile_image_data.startsWith("data:image/jpeg;base64,")
+    ) {
+      return res.status(400).json({
+        status: "invalid_profile_image",
+        message:
+          "Please capture and confirm a profile photo using your camera.",
+      });
     }
 
-    // 6. Check whether the rider account already exists
+    // Extract the Base64 image data.
+
+    const base64Match = profile_image_data.match(
+      /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/
+    );
+
+    if (!base64Match) {
+      return res.status(400).json({
+        status: "invalid_profile_image",
+        message: "The captured profile photo is invalid.",
+      });
+    }
+
+    const imageBuffer = Buffer.from(base64Match[1], "base64");
+
+    // Limit the decoded image to 5 MB.
+
+    const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+
+    if (
+      imageBuffer.length === 0 ||
+      imageBuffer.length > MAX_IMAGE_SIZE
+    ) {
+      return res.status(400).json({
+        status: "invalid_profile_image",
+        message:
+          "The profile photo must be a valid image smaller than 5 MB.",
+      });
+    }
+
+    // Verify that the decoded file begins with the JPEG signature.
+
+    const isJpeg =
+      imageBuffer.length >= 3 &&
+      imageBuffer[0] === 0xff &&
+      imageBuffer[1] === 0xd8 &&
+      imageBuffer[2] === 0xff;
+
+    if (!isJpeg) {
+      return res.status(400).json({
+        status: "invalid_profile_image",
+        message: "Please submit a valid JPEG camera photo.",
+      });
+    }
+
+    // ==================================================
+    // 5. CHECK EXISTING RIDER ACCOUNT
+    // ==================================================
+
     const existingRider = await User.findOne({
       email: normalizedEmail,
       user_type: "rider",
@@ -1290,11 +1332,15 @@ app.post("/rider/request-account", async (req, res) => {
     if (existingRider) {
       return res.status(409).json({
         status: "rider_already_exists",
-        message: "A rider account already exists for this email address.",
+        message:
+          "A rider account already exists for this email address.",
       });
     }
 
-    // 7. Check for an existing active rider request
+    // ==================================================
+    // 6. CHECK EXISTING RIDER REQUEST
+    // ==================================================
+
     const existingRequest = await BecomeRider.findOne({
       email: normalizedEmail,
       status: {
@@ -1305,91 +1351,192 @@ app.post("/rider/request-account", async (req, res) => {
     if (existingRequest) {
       return res.status(409).json({
         status: "request_already_exists",
-        message: "Your rider account request has already been submitted.",
+        message:
+          "Your rider account request has already been submitted.",
       });
     }
 
-    // 8. Create the rider request
+    // ==================================================
+    // 7. UPLOAD CAMERA PHOTO TO GOOGLE DRIVE
+    // ==================================================
+
+    // Convert the captured image into the file object
+    // expected by your existing uploadProfileImage helper.
+
+    const cameraPhotoFile = {
+      buffer: imageBuffer,
+      mimetype: "image/jpeg",
+      originalname: "rider-profile.jpg",
+      size: imageBuffer.length,
+    };
+
+    const uploadedImage = await uploadProfileImage(
+      cameraPhotoFile,
+      "rider"
+    );
+
+    // Make sure Google Drive returned a usable URL.
+
+    if (
+      !uploadedImage ||
+      typeof uploadedImage.url !== "string" ||
+      !uploadedImage.url.trim()
+    ) {
+      throw new Error(
+        "Google Drive did not return a profile image URL."
+      );
+    }
+
+    const normalizedProfileImage = uploadedImage.url.trim();
+
+    console.log(
+      "Rider profile photo uploaded successfully to Google Drive."
+    );
+
+    // ==================================================
+    // 8. SAVE RIDER REQUEST TO MONGODB
+    // ==================================================
+
     const riderRequest = await BecomeRider.create({
       first_name: normalizedFirstName,
       last_name: normalizedLastName,
       email: normalizedEmail,
       phone: normalizedPhoneDigits,
 
-      // Newly added profile image field
+      // Save the Google Drive URL, NOT the Base64 image.
       profile_image: normalizedProfileImage,
 
       email_checked: true,
+
       status: "pending",
+
       reviewed_by: null,
       reviewed_at: null,
+
       rejection_reason: "",
+
       created_user_id: null,
       account_created_at: null,
     });
 
-    console.log("New rider request received:", riderRequest._id);
+    console.log(
+      "New rider request received:",
+      riderRequest._id
+    );
 
-    // 9. Send confirmation email
+    // ==================================================
+    // 9. SEND CONFIRMATION EMAIL
+    // ==================================================
+
     let emailSent = false;
 
     try {
       await sendEmail({
         to: normalizedEmail,
-        subject: "Your DWJD Rider Account Request Has Been Received",
+
+        subject:
+          "Your DWJD Rider Account Request Has Been Received",
+
         html: `
           <!DOCTYPE html>
           <html>
-            <body style="margin:0;padding:0;background-color:#f4f6f8;font-family:Arial,sans-serif;">
-              <div style="max-width:600px;margin:30px auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+            <body style="
+              margin: 0;
+              padding: 0;
+              background-color: #f4f6f8;
+              font-family: Arial, sans-serif;
+            ">
+              <div style="
+                max-width: 600px;
+                margin: 30px auto;
+                background: #ffffff;
+                border-radius: 12px;
+                overflow: hidden;
+                border: 1px solid #e5e7eb;
+              ">
+                <div style="
+                  background: #111827;
+                  color: #ffffff;
+                  padding: 28px;
+                  text-align: center;
+                ">
+                  <h1 style="margin: 0;">DWJD</h1>
 
-                <div style="background:#111827;color:#ffffff;padding:28px;text-align:center;">
-                  <h1 style="margin:0;">DWJD</h1>
-                  <p style="margin-bottom:0;">Rider Account Request</p>
+                  <p style="margin-bottom: 0;">
+                    Rider Account Request
+                  </p>
                 </div>
 
-                <div style="padding:30px;">
-                  <h2 style="color:#111827;">
+                <div style="padding: 30px;">
+                  <h2 style="color: #111827;">
                     Hi ${escapeHtml(normalizedFirstName)},
                   </h2>
 
-                  <p style="color:#4b5563;line-height:1.7;">
-                    Thank you for your interest in becoming a rider with DWJD!
+                  <p style="
+                    color: #4b5563;
+                    line-height: 1.7;
+                  ">
+                    Thank you for your interest in becoming
+                    a rider with DWJD!
                   </p>
 
-                  <p style="color:#4b5563;line-height:1.7;">
-                    We have successfully received your rider account request.
+                  <p style="
+                    color: #4b5563;
+                    line-height: 1.7;
+                  ">
+                    We have successfully received your
+                    rider account request.
                   </p>
 
-                  <div style="background:#eff6ff;border-left:4px solid #2563eb;padding:16px;margin:24px 0;border-radius:6px;">
-                    <h3 style="margin-top:0;color:#1d4ed8;">
+                  <div style="
+                    background: #eff6ff;
+                    border-left: 4px solid #2563eb;
+                    padding: 16px;
+                    margin: 24px 0;
+                    border-radius: 6px;
+                  ">
+                    <h3 style="color: #1d4ed8;">
                       What happens next?
                     </h3>
 
-                    <p style="color:#374151;line-height:1.7;margin-bottom:0;">
-                      Our Customer Support team will review your request within 24 hours.
-                      We will contact you by email regarding the next steps.
+                    <p style="
+                      color: #374151;
+                      line-height: 1.7;
+                    ">
+                      Our Customer Support team will review
+                      your request within 24 hours. We will
+                      contact you by email regarding the
+                      next steps.
                     </p>
                   </div>
 
-                  <p style="color:#4b5563;line-height:1.7;">
-                    Please keep an eye on your inbox for further updates.
+                  <p style="
+                    color: #4b5563;
+                    line-height: 1.7;
+                  ">
+                    Please keep an eye on your inbox for
+                    further updates.
                   </p>
 
-                  <p style="color:#4b5563;line-height:1.7;">
-                    Thank you for your patience.
-                  </p>
-
-                  <p style="color:#111827;line-height:1.7;">
+                  <p style="
+                    color: #111827;
+                    line-height: 1.7;
+                  ">
                     Best regards,<br />
                     <strong>DWJD Customer Support Team</strong>
                   </p>
                 </div>
 
-                <div style="background:#f9fafb;padding:16px;text-align:center;color:#6b7280;font-size:12px;">
-                  This is an automated confirmation email from DWJD.
+                <div style="
+                  background: #f9fafb;
+                  padding: 16px;
+                  text-align: center;
+                  color: #6b7280;
+                  font-size: 12px;
+                ">
+                  This is an automated confirmation email
+                  from DWJD.
                 </div>
-
               </div>
             </body>
           </html>
@@ -1398,22 +1545,33 @@ app.post("/rider/request-account", async (req, res) => {
 
       emailSent = true;
     } catch (emailError) {
+      // Do not delete the request if the email fails.
+
       console.error(
         "Rider request confirmation email failed:",
         emailError.message
       );
     }
 
-    // 10. Return success response
+    // ==================================================
+    // 10. RETURN SUCCESS RESPONSE
+    // ==================================================
+
     return res.status(201).json({
       status: "request_submitted",
+
       message:
         "Your rider account request has been submitted successfully. Our Customer Support team will review your request within 24 hours.",
+
       request_id: riderRequest._id,
+
       email_sent: emailSent,
     });
   } catch (error) {
-    console.error("Become Rider request error:", error);
+    console.error(
+      "Become Rider request error:",
+      error
+    );
 
     return res.status(500).json({
       status: "error",
@@ -1422,7 +1580,6 @@ app.post("/rider/request-account", async (req, res) => {
     });
   }
 });
-
 /* =================================================
    HTML ESCAPING HELPER
 ================================================= */
