@@ -17,6 +17,8 @@ const aiRoutes = require("./routes/ai");
 const app = express();
 
 /* ================= MIDDLEWARE ================= */
+const cors = require("cors");
+
 const allowedOrigins = [
   "https://dwjd.vercel.app",
   "http://localhost:5173",
@@ -24,24 +26,21 @@ const allowedOrigins = [
   "http://192.168.1.3:5173",
 ];
 
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests without an origin (Postman, server-to-server, etc.)
-    if (!origin) {
-      return callback(null, true);
-    }
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
 
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-
-    return callback(new Error("Not allowed by CORS"));
-  },
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS","PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-};
-
-app.use(cors(corsOptions));
+      console.error("Blocked CORS origin:", origin);
+      return callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+    credentials: true,
+  })
+);
 app.use(express.json());
 app.use("/ai", aiRoutes);
 
