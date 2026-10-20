@@ -2637,6 +2637,126 @@ async function uploadProfileImage(file, userType) {
     throw error;
   }
 }
+
+// ============================================
+// UPLOAD USER / RIDER PROFILE PHOTO
+// POST /upload-profile-photo
+// ============================================
+
+app.post(
+  "/upload-profile-photo",
+  (req, res, next) => {
+    profileUpload.single("photo")(req, res, (error) => {
+      if (!error) {
+        return next();
+      }
+
+      if (error instanceof multer.MulterError) {
+        if (error.code === "LIMIT_FILE_SIZE") {
+          return res.status(413).json({
+            status: "file_too_large",
+            message: "Profile photo must not exceed 5 MB.",
+          });
+        }
+
+        return res.status(400).json({
+          status: "upload_error",
+          message: error.message,
+        });
+      }
+
+      return res.status(400).json({
+        status: "invalid_image",
+        message: error.message,
+      });
+    });
+  },
+
+  async (req, res) => {
+    let uploadedFileId = null;
+
+    try {
+      const { email } = req.body;
+
+      if (!email || typeof email !== "string") {
+        return res.status(400).json({
+          status: "missing_email",
+          message: "Email is required.",
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          status: "missing_photo",
+          message: "Please select a profile photo.",
+        });
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+
+      // Find the existing user or rider.
+      const user = await User.findOne({
+        email: normalizedEmail,
+      });
+
+      if (!user) {
+        return res.status(404).json({
+          status: "not_found",
+          message: "User or rider account not found.",
+        });
+      }
+
+      // Upload to the existing Google Drive folder.
+      const uploadedImage = await uploadProfileImage(
+        req.file,
+        user.user_type
+      );
+
+      uploadedFileId = uploadedImage.fileId;
+
+      // Save the returned Drive URL in MongoDB.
+      user.profile_image = uploadedImage.url;
+
+      await user.save();
+
+      return res.status(200).json({
+        status: "photo_uploaded",
+        message: "Profile photo uploaded successfully.",
+        user: {
+          _id: user._id,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          email: user.email,
+          profile_image: user.profile_image,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Profile photo upload error:",
+        error.response?.data || error.message
+      );
+
+      // Remove an uploaded file if the database update failed.
+      if (uploadedFileId) {
+        try {
+          await drive.files.delete({
+            fileId: uploadedFileId,
+          });
+        } catch (cleanupError) {
+          console.error(
+            "Profile photo cleanup failed:",
+            cleanupError.message
+          );
+        }
+      }
+
+      return res.status(500).json({
+        status: "upload_failed",
+        message: "Unable to upload your profile photo.",
+      });
+    }
+  }
+);
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
