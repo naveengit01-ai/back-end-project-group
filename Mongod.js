@@ -596,19 +596,57 @@ app.post("/get-user-by-email", async (req, res) => {
   try {
     const { email } = req.body;
 
-    if (!email) {
-      return res.json({ status: "missing_fields" });
+    // 1. Validate email
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({
+        status: "missing_fields",
+        message: "Email is required.",
+      });
     }
 
-    const user = await User.findOne({ email }).select("-password -otp -otp_expiry");
+    // 2. Normalize email
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // 3. Find the user and exclude sensitive fields
+    const user = await User.findOne({
+      email: normalizedEmail,
+    }).select("-password -otp -otp_expiry -__v");
+
+    // 4. Check if user exists
     if (!user) {
-      return res.json({ status: "not_found" });
+      return res.status(404).json({
+        status: "not_found",
+        message: "User not found.",
+      });
     }
 
-    res.json({ status: "success", user });
+    // 5. Return user information
+    return res.status(200).json({
+      status: "success",
+      message: "User details retrieved successfully.",
+      user: {
+        _id: user._id,
+        username: user.username,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        email: user.email,
+        phone: user.phone,
+        profile_image: user.profile_image || "",
+        user_type: user.user_type,
+        is_rider_approved: user.is_rider_approved,
+        is_verified: user.is_verified,
+        is_active: user.is_active,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      },
+    });
   } catch (err) {
     console.error("Get user error:", err);
-    res.status(500).json({ status: "error" });
+
+    return res.status(500).json({
+      status: "error",
+      message: "An internal server error occurred while retrieving user details.",
+    });
   }
 });
 
@@ -616,38 +654,91 @@ app.put("/update-profile", async (req, res) => {
   try {
     const { email, first_name, last_name, phone } = req.body;
 
-    if (!email) {
-      return res.json({ status: "missing_email" });
+    // 1. Validate email
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({
+        status: "missing_email",
+        message: "Email is required.",
+      });
     }
 
-    const user = await User.findOne({ email });
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // 2. Find the user
+    const user = await User.findOne({
+      email: normalizedEmail,
+    });
+
     if (!user) {
-      return res.json({ status: "not_found" });
+      return res.status(404).json({
+        status: "not_found",
+        message: "User not found.",
+      });
     }
 
-    if (first_name !== undefined) user.first_name = first_name;
-    if (last_name !== undefined) user.last_name = last_name;
-    if (phone !== undefined) user.phone = phone;
+    // 3. Validate and update editable fields
+    if (first_name !== undefined) {
+      if (typeof first_name !== "string" || !first_name.trim()) {
+        return res.status(400).json({
+          status: "invalid_first_name",
+          message: "First name cannot be empty.",
+        });
+      }
 
+      user.first_name = first_name.trim();
+    }
+
+    if (last_name !== undefined) {
+      if (typeof last_name !== "string" || !last_name.trim()) {
+        return res.status(400).json({
+          status: "invalid_last_name",
+          message: "Last name cannot be empty.",
+        });
+      }
+
+      user.last_name = last_name.trim();
+    }
+
+    if (phone !== undefined) {
+      if (typeof phone !== "string" || !phone.trim()) {
+        return res.status(400).json({
+          status: "invalid_phone",
+          message: "Phone number cannot be empty.",
+        });
+      }
+
+      user.phone = phone.trim();
+    }
+
+    // 4. Save changes
     await user.save();
 
+    // 5. Return safe user data
     const safeUser = {
       _id: user._id,
+      username: user.username,
       first_name: user.first_name,
       last_name: user.last_name,
       email: user.email,
       phone: user.phone,
+      profile_image: user.profile_image || "",
       user_type: user.user_type,
       is_verified: user.is_verified,
+      is_active: user.is_active,
     };
 
-    res.json({
+    return res.status(200).json({
       status: "updated_successfully",
+      message: "Profile updated successfully.",
       user: safeUser,
     });
   } catch (err) {
     console.error("Update profile error:", err);
-    res.status(500).json({ status: "error" });
+
+    return res.status(500).json({
+      status: "error",
+      message: "An internal server error occurred while updating your profile.",
+    });
   }
 });
 
