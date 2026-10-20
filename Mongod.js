@@ -2624,7 +2624,7 @@ async function uploadProfileImage(file, userType) {
       fileId,
 
       url:
-        `https://drive.google.com/uc?export=view&id=${fileId}`,
+        `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`,
     };
   } catch (error) {
     try {
