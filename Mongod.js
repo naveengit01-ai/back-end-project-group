@@ -21,7 +21,7 @@ const app = express();
 const allowedOrigins = [
   "https://dwjd.vercel.app",
   "http://localhost:5173",
-  "https://admin-org.vercel.app",
+  "https://dwjd-org.vercel.app",
   "http://192.168.1.3:5173",
 ];
 
