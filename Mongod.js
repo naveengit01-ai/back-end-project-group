@@ -1187,8 +1187,15 @@ app.post("/rider/verify-email", async (req, res) => {
 
 app.post("/rider/request-account", async (req, res) => {
   try {
-    const { first_name, last_name, email, phone } = req.body;
+    const {
+      first_name,
+      last_name,
+      email,
+      phone,
+      profile_image,
+    } = req.body;
 
+    // 1. Validate required fields
     if (
       !first_name?.trim() ||
       !last_name?.trim() ||
@@ -1201,12 +1208,15 @@ app.post("/rider/request-account", async (req, res) => {
       });
     }
 
+    // 2. Normalize input
     const normalizedEmail = email.trim().toLowerCase();
     const normalizedFirstName = first_name.trim();
     const normalizedLastName = last_name.trim();
     const normalizedPhone = phone.trim();
 
+    // 3. Validate email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
     if (!emailRegex.test(normalizedEmail)) {
       return res.status(400).json({
         status: "invalid_email",
@@ -1214,7 +1224,9 @@ app.post("/rider/request-account", async (req, res) => {
       });
     }
 
+    // 4. Validate phone number
     const normalizedPhoneDigits = normalizedPhone.replace(/[\s()-]/g, "");
+
     if (!/^\+?\d{10,15}$/.test(normalizedPhoneDigits)) {
       return res.status(400).json({
         status: "invalid_phone",
@@ -1222,6 +1234,54 @@ app.post("/rider/request-account", async (req, res) => {
       });
     }
 
+    // 5. Validate profile image URL
+    let normalizedProfileImage = "";
+
+    if (profile_image !== undefined && profile_image !== null) {
+      if (typeof profile_image !== "string") {
+        return res.status(400).json({
+          status: "invalid_profile_image",
+          message: "Profile image must be a valid URL.",
+        });
+      }
+
+      normalizedProfileImage = profile_image.trim();
+
+      if (normalizedProfileImage.length > 2048) {
+        return res.status(400).json({
+          status: "invalid_profile_image",
+          message: "Profile image URL is too long.",
+        });
+      }
+
+      if (normalizedProfileImage) {
+        try {
+          const imageUrl = new URL(normalizedProfileImage);
+
+          const allowedHosts = [
+            "drive.google.com",
+            "lh3.googleusercontent.com",
+          ];
+
+          if (
+            imageUrl.protocol !== "https:" ||
+            !allowedHosts.includes(imageUrl.hostname)
+          ) {
+            return res.status(400).json({
+              status: "invalid_profile_image",
+              message: "Please provide a supported Google Drive image URL.",
+            });
+          }
+        } catch {
+          return res.status(400).json({
+            status: "invalid_profile_image",
+            message: "Please provide a valid profile image URL.",
+          });
+        }
+      }
+    }
+
+    // 6. Check whether the rider account already exists
     const existingRider = await User.findOne({
       email: normalizedEmail,
       user_type: "rider",
@@ -1234,6 +1294,7 @@ app.post("/rider/request-account", async (req, res) => {
       });
     }
 
+    // 7. Check for an existing active rider request
     const existingRequest = await BecomeRider.findOne({
       email: normalizedEmail,
       status: {
@@ -1248,11 +1309,16 @@ app.post("/rider/request-account", async (req, res) => {
       });
     }
 
+    // 8. Create the rider request
     const riderRequest = await BecomeRider.create({
       first_name: normalizedFirstName,
       last_name: normalizedLastName,
       email: normalizedEmail,
       phone: normalizedPhoneDigits,
+
+      // Newly added profile image field
+      profile_image: normalizedProfileImage,
+
       email_checked: true,
       status: "pending",
       reviewed_by: null,
@@ -1264,6 +1330,7 @@ app.post("/rider/request-account", async (req, res) => {
 
     console.log("New rider request received:", riderRequest._id);
 
+    // 9. Send confirmation email
     let emailSent = false;
 
     try {
@@ -1273,41 +1340,62 @@ app.post("/rider/request-account", async (req, res) => {
         html: `
           <!DOCTYPE html>
           <html>
-            <body style="margin: 0; padding: 0; background-color: #f4f6f8; font-family: Arial, sans-serif;">
-              <div style="max-width: 600px; margin: 30px auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e5e7eb;">
-                <div style="background: #111827; color: #ffffff; padding: 28px; text-align: center;">
-                  <h1 style="margin: 0;">DWJD</h1>
-                  <p style="margin-bottom: 0;">Rider Account Request</p>
+            <body style="margin:0;padding:0;background-color:#f4f6f8;font-family:Arial,sans-serif;">
+              <div style="max-width:600px;margin:30px auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+
+                <div style="background:#111827;color:#ffffff;padding:28px;text-align:center;">
+                  <h1 style="margin:0;">DWJD</h1>
+                  <p style="margin-bottom:0;">Rider Account Request</p>
                 </div>
-                <div style="padding: 30px;">
-                  <h2 style="color: #111827;">Hi ${escapeHtml(normalizedFirstName)},</h2>
-                  <p style="color: #4b5563; line-height: 1.7;">
+
+                <div style="padding:30px;">
+                  <h2 style="color:#111827;">
+                    Hi ${escapeHtml(normalizedFirstName)},
+                  </h2>
+
+                  <p style="color:#4b5563;line-height:1.7;">
                     Thank you for your interest in becoming a rider with DWJD!
                   </p>
-                  <p style="color: #4b5563; line-height: 1.7;">
+
+                  <p style="color:#4b5563;line-height:1.7;">
                     We have successfully received your rider account request.
                   </p>
-                  <div style="background: #eff6ff; border-left: 4px solid #2563eb; padding: 16px; margin: 24px 0; border-radius: 6px;">
-                    <h3 style="margin-top: 0; color: #1d4ed8;">What happens next?</h3>
-                    <p style="color: #374151; line-height: 1.7; margin-bottom: 0;">
-                      Our Customer Support team will review your request within 24 hours. We will contact you by email regarding the next steps.
+
+                  <div style="background:#eff6ff;border-left:4px solid #2563eb;padding:16px;margin:24px 0;border-radius:6px;">
+                    <h3 style="margin-top:0;color:#1d4ed8;">
+                      What happens next?
+                    </h3>
+
+                    <p style="color:#374151;line-height:1.7;margin-bottom:0;">
+                      Our Customer Support team will review your request within 24 hours.
+                      We will contact you by email regarding the next steps.
                     </p>
                   </div>
-                  <p style="color: #4b5563; line-height: 1.7;">Please keep an eye on your inbox for further updates.</p>
-                  <p style="color: #4b5563; line-height: 1.7;">Thank you for your patience.</p>
-                  <p style="color: #111827; line-height: 1.7;">
+
+                  <p style="color:#4b5563;line-height:1.7;">
+                    Please keep an eye on your inbox for further updates.
+                  </p>
+
+                  <p style="color:#4b5563;line-height:1.7;">
+                    Thank you for your patience.
+                  </p>
+
+                  <p style="color:#111827;line-height:1.7;">
                     Best regards,<br />
                     <strong>DWJD Customer Support Team</strong>
                   </p>
                 </div>
-                <div style="background: #f9fafb; padding: 16px; text-align: center; color: #6b7280; font-size: 12px;">
+
+                <div style="background:#f9fafb;padding:16px;text-align:center;color:#6b7280;font-size:12px;">
                   This is an automated confirmation email from DWJD.
                 </div>
+
               </div>
             </body>
           </html>
         `,
       });
+
       emailSent = true;
     } catch (emailError) {
       console.error(
@@ -1316,6 +1404,7 @@ app.post("/rider/request-account", async (req, res) => {
       );
     }
 
+    // 10. Return success response
     return res.status(201).json({
       status: "request_submitted",
       message:
@@ -1325,9 +1414,11 @@ app.post("/rider/request-account", async (req, res) => {
     });
   } catch (error) {
     console.error("Become Rider request error:", error);
+
     return res.status(500).json({
       status: "error",
-      message: "We could not submit your request right now. Please try again later.",
+      message:
+        "We could not submit your request right now. Please try again later.",
     });
   }
 });

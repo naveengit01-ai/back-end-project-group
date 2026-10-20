@@ -50,6 +50,11 @@ const becomeRiderSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    
+    profile_image: {
+      type: String,
+      default: ""
+    },
 
     // Customer Support review information
     reviewed_by: {
