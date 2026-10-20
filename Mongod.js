@@ -589,7 +589,7 @@ app.post("/resend-otp", async (req, res) => {
 });
 
 /* =================================================
-   USER PROFILE
+   GET USER BY EMAIL
 ================================================= */
 
 app.post("/get-user-by-email", async (req, res) => {
@@ -607,12 +607,12 @@ app.post("/get-user-by-email", async (req, res) => {
     // 2. Normalize email
     const normalizedEmail = email.trim().toLowerCase();
 
-    // 3. Find the user and exclude sensitive fields
+    // 3. Retrieve user from MongoDB
     const user = await User.findOne({
       email: normalizedEmail,
     }).select("-password -otp -otp_expiry -__v");
 
-    // 4. Check if user exists
+    // 4. Check whether user exists
     if (!user) {
       return res.status(404).json({
         status: "not_found",
@@ -620,10 +620,11 @@ app.post("/get-user-by-email", async (req, res) => {
       });
     }
 
-    // 5. Return user information
+    // 5. Return user details, including profile image
     return res.status(200).json({
       status: "success",
       message: "User details retrieved successfully.",
+
       user: {
         _id: user._id,
         username: user.username,
@@ -631,7 +632,10 @@ app.post("/get-user-by-email", async (req, res) => {
         last_name: user.last_name,
         email: user.email,
         phone: user.phone,
+
+        // Profile photo from MongoDB
         profile_image: user.profile_image || "",
+
         user_type: user.user_type,
         is_rider_approved: user.is_rider_approved,
         is_verified: user.is_verified,
@@ -2638,44 +2642,146 @@ async function uploadProfileImage(file, userType) {
   }
 }
 
-// ============================================
-// UPLOAD USER / RIDER PROFILE PHOTO
-// POST /upload-profile-photo
-// ============================================
+/* =========================================================
+   UPLOAD PROFILE PHOTO API
+   Google Drive + MongoDB
+========================================================= */
 
+// Extract a Google Drive file ID from a stored URL.
+function getGoogleDriveFileId(imageUrl) {
+  if (!imageUrl || typeof imageUrl !== "string") {
+    return null;
+  }
+
+  try {
+    const parsedUrl = new URL(imageUrl);
+
+    // Only process URLs belonging to Google Drive.
+    const isGoogleDrive =
+      parsedUrl.hostname === "drive.google.com" ||
+      parsedUrl.hostname === "docs.google.com";
+
+    if (!isGoogleDrive) {
+      return null;
+    }
+
+    // Format:
+    // https://drive.google.com/uc?export=view&id=FILE_ID
+    const queryFileId = parsedUrl.searchParams.get("id");
+
+    if (queryFileId) {
+      return queryFileId;
+    }
+
+    // Format:
+    // https://drive.google.com/file/d/FILE_ID/view
+    const pathMatch = parsedUrl.pathname.match(
+      /\/file\/d\/([^/]+)/
+    );
+
+    if (pathMatch) {
+      return pathMatch[1];
+    }
+
+    return null;
+  } catch (error) {
+    console.error("Unable to extract Google Drive file ID:", error.message);
+    return null;
+  }
+}
+
+
+// Delete an old Google Drive profile photo.
+async function deleteOldProfilePhoto(imageUrl, newFileId) {
+  const oldFileId = getGoogleDriveFileId(imageUrl);
+
+  // No valid Google Drive ID was found.
+  if (!oldFileId) {
+    console.log(
+      "No previous Google Drive photo found. Skipping deletion."
+    );
+
+    return;
+  }
+
+  // Never delete the newly uploaded photo.
+  if (oldFileId === newFileId) {
+    console.log(
+      "Old and new photo IDs match. Skipping deletion."
+    );
+
+    return;
+  }
+
+  try {
+    await drive.files.delete({
+      fileId: oldFileId,
+    });
+
+    console.log(
+      "Previous profile photo deleted successfully:",
+      oldFileId
+    );
+  } catch (error) {
+    console.error(
+      "Failed to delete previous Google Drive photo:",
+      oldFileId,
+      error.response?.data || error.message
+    );
+
+    // Do not throw here.
+    // The new photo has already been saved successfully.
+  }
+}
+
+
+// Profile photo upload endpoint.
 app.post(
   "/upload-profile-photo",
+
+  // Multer middleware with error handling.
   (req, res, next) => {
     profileUpload.single("photo")(req, res, (error) => {
-      if (!error) {
-        return next();
-      }
+      if (error) {
+        console.error(
+          "Profile photo validation error:",
+          error.message
+        );
 
-      if (error instanceof multer.MulterError) {
         if (error.code === "LIMIT_FILE_SIZE") {
-          return res.status(413).json({
+          return res.status(400).json({
             status: "file_too_large",
             message: "Profile photo must not exceed 5 MB.",
           });
         }
 
+        if (error.code === "LIMIT_UNEXPECTED_FILE") {
+          return res.status(400).json({
+            status: "unexpected_file",
+            message:
+              'Unexpected file field. Use the field name "photo".',
+          });
+        }
+
         return res.status(400).json({
-          status: "upload_error",
-          message: error.message,
+          status: "invalid_photo",
+          message: error.message || "Invalid profile photo.",
         });
       }
 
-      return res.status(400).json({
-        status: "invalid_image",
-        message: error.message,
-      });
+      next();
     });
   },
 
+  // Main upload handler.
   async (req, res) => {
     let uploadedFileId = null;
 
     try {
+      /* -----------------------------------------
+         1. Validate request
+      ----------------------------------------- */
+
       const { email } = req.body;
 
       if (!email || typeof email !== "string") {
@@ -2694,7 +2800,10 @@ app.post(
 
       const normalizedEmail = email.trim().toLowerCase();
 
-      // Find the existing user or rider.
+      /* -----------------------------------------
+         2. Find the user
+      ----------------------------------------- */
+
       const user = await User.findOne({
         email: normalizedEmail,
       });
@@ -2706,7 +2815,16 @@ app.post(
         });
       }
 
-      // Upload to the existing Google Drive folder.
+      /* -----------------------------------------
+         3. Store the old photo information
+      ----------------------------------------- */
+
+      const oldProfileImage = user.profile_image || null;
+
+      /* -----------------------------------------
+         4. Upload the new photo to Google Drive
+      ----------------------------------------- */
+
       const uploadedImage = await uploadProfileImage(
         req.file,
         user.user_type
@@ -2714,14 +2832,42 @@ app.post(
 
       uploadedFileId = uploadedImage.fileId;
 
-      // Save the returned Drive URL in MongoDB.
+      if (!uploadedImage.fileId || !uploadedImage.url) {
+        throw new Error(
+          "Google Drive did not return the expected photo details."
+        );
+      }
+
+      /* -----------------------------------------
+         5. Update MongoDB with the new photo URL
+      ----------------------------------------- */
+
       user.profile_image = uploadedImage.url;
 
       await user.save();
 
+      // MongoDB now contains the new photo URL.
+      // Do not delete the new photo if old-photo deletion fails.
+
+      /* -----------------------------------------
+         6. Delete the previous Google Drive photo
+      ----------------------------------------- */
+
+      if (oldProfileImage) {
+        await deleteOldProfilePhoto(
+          oldProfileImage,
+          uploadedImage.fileId
+        );
+      }
+
+      /* -----------------------------------------
+         7. Send success response
+      ----------------------------------------- */
+
       return res.status(200).json({
         status: "photo_uploaded",
         message: "Profile photo uploaded successfully.",
+
         user: {
           _id: user._id,
           first_name: user.first_name,
@@ -2736,16 +2882,26 @@ app.post(
         error.response?.data || error.message
       );
 
-      // Remove an uploaded file if the database update failed.
+      /* -----------------------------------------
+         8. Clean up the new photo if the operation
+            failed before completing successfully
+      ----------------------------------------- */
+
       if (uploadedFileId) {
         try {
           await drive.files.delete({
             fileId: uploadedFileId,
           });
+
+          console.log(
+            "Newly uploaded photo cleaned up:",
+            uploadedFileId
+          );
         } catch (cleanupError) {
           console.error(
-            "Profile photo cleanup failed:",
-            cleanupError.message
+            "New photo cleanup failed:",
+            cleanupError.response?.data ||
+              cleanupError.message
           );
         }
       }
