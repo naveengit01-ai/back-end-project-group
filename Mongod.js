@@ -44,7 +44,8 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json());app.use("/ai", aiRoutes);
+app.use(express.json());
+app.use("/ai", aiRoutes);
 
 /* ================= DATABASE ================= */
 mongoose
