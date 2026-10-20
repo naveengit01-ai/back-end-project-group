@@ -588,15 +588,67 @@ app.post("/resend-otp", async (req, res) => {
   }
 });
 
-/* =================================================
-   GET USER BY EMAIL
-================================================= */
+function getProfileImageUrl(imageUrl) {
+  if (!imageUrl || typeof imageUrl !== "string") {
+    return "";
+  }
+
+  try {
+    const parsedUrl = new URL(imageUrl);
+
+    // Support Google Drive image URLs.
+    const isGoogleDrive =
+      parsedUrl.hostname === "drive.google.com" ||
+      parsedUrl.hostname === "docs.google.com" ||
+      parsedUrl.hostname === "lh3.googleusercontent.com";
+
+    if (!isGoogleDrive) {
+      return imageUrl;
+    }
+
+    let fileId = parsedUrl.searchParams.get("id");
+
+    // Handle URLs such as:
+    // drive.google.com/file/d/FILE_ID/view
+    if (!fileId) {
+      const match = parsedUrl.pathname.match(
+        /\/file\/d\/([^/]+)/
+      );
+
+      if (match) {
+        fileId = match[1];
+      }
+    }
+
+    // Handle Google thumbnail URLs containing the ID in /d/FILE_ID.
+    if (!fileId) {
+      const match = parsedUrl.pathname.match(
+        /\/d\/([^/]+)/
+      );
+
+      if (match) {
+        fileId = match[1];
+      }
+    }
+
+    if (!fileId) {
+      return imageUrl;
+    }
+
+    return `https://drive.google.com/thumbnail?id=${encodeURIComponent(
+      fileId
+    )}&sz=w400`;
+  } catch (error) {
+    console.error("Profile image URL parsing failed:", error.message);
+    return imageUrl;
+  }
+}
 
 app.post("/get-user-by-email", async (req, res) => {
   try {
     const { email } = req.body;
 
-    // 1. Validate email
+    // 1. Validate email.
     if (!email || typeof email !== "string") {
       return res.status(400).json({
         status: "missing_fields",
@@ -604,15 +656,15 @@ app.post("/get-user-by-email", async (req, res) => {
       });
     }
 
-    // 2. Normalize email
+    // 2. Normalize email.
     const normalizedEmail = email.trim().toLowerCase();
 
-    // 3. Retrieve user from MongoDB
+    // 3. Retrieve user from MongoDB.
     const user = await User.findOne({
       email: normalizedEmail,
     }).select("-password -otp -otp_expiry -__v");
 
-    // 4. Check whether user exists
+    // 4. Check whether user exists.
     if (!user) {
       return res.status(404).json({
         status: "not_found",
@@ -620,7 +672,12 @@ app.post("/get-user-by-email", async (req, res) => {
       });
     }
 
-    // 5. Return user details, including profile image
+    // 5. Normalize the profile image URL.
+    const profileImageUrl = getProfileImageUrl(
+      user.profile_image
+    );
+
+    // 6. Return user details.
     return res.status(200).json({
       status: "success",
       message: "User details retrieved successfully.",
@@ -633,8 +690,7 @@ app.post("/get-user-by-email", async (req, res) => {
         email: user.email,
         phone: user.phone,
 
-        // Profile photo from MongoDB
-        profile_image: user.profile_image || "",
+        profile_image: profileImageUrl,
 
         user_type: user.user_type,
         is_rider_approved: user.is_rider_approved,
@@ -649,11 +705,11 @@ app.post("/get-user-by-email", async (req, res) => {
 
     return res.status(500).json({
       status: "error",
-      message: "An internal server error occurred while retrieving user details.",
+      message:
+        "An internal server error occurred while retrieving user details.",
     });
   }
 });
-
 app.put("/update-profile", async (req, res) => {
   try {
     const { email, first_name, last_name, phone } = req.body;
