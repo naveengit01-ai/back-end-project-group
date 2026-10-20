@@ -17,7 +17,6 @@ const aiRoutes = require("./routes/ai");
 const app = express();
 
 /* ================= MIDDLEWARE ================= */
-const cors = require("cors");
 
 const allowedOrigins = [
   "https://dwjd.vercel.app",
