@@ -3733,6 +3733,173 @@ app.get("/admin/advertisements", async (req, res) => {
     });
   }
 });
+// PATCH /admin/advertisements/:id/approve
+
+app.patch(
+  "/admin/advertisements/:id/approve",
+  YOUR_EXISTING_ADMIN_AUTH_MIDDLEWARE,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const advertisement = await Advertisement.findById(id);
+
+      if (!advertisement) {
+        return res.status(404).json({
+          success: false,
+          message: "Promotion not found.",
+        });
+      }
+
+      if (advertisement.status === "completed") {
+        return res.status(400).json({
+          success: false,
+          message: "Completed promotions cannot be approved again.",
+        });
+      }
+
+      advertisement.status = "approved";
+      advertisement.rejection_reason = "";
+      advertisement.reviewed_at = new Date();
+
+      // Do not activate automatically.
+      // Activation also requires verified payment.
+      advertisement.is_active = false;
+
+      // Set reviewed_by here using the authenticated admin's
+      // actual database ID, according to your authentication setup.
+
+      await advertisement.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Promotion approved successfully.",
+        advertisement,
+      });
+    } catch (error) {
+      console.error("Approve promotion error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to approve promotion.",
+      });
+    }
+  }
+);
+// PATCH /admin/advertisements/:id/approve
+
+app.patch(
+  "/admin/advertisements/:id/approve",
+  YOUR_EXISTING_ADMIN_AUTH_MIDDLEWARE,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const advertisement = await Advertisement.findById(id);
+
+      if (!advertisement) {
+        return res.status(404).json({
+          success: false,
+          message: "Promotion not found.",
+        });
+      }
+
+      if (advertisement.status === "completed") {
+        return res.status(400).json({
+          success: false,
+          message: "Completed promotions cannot be approved again.",
+        });
+      }
+
+      advertisement.status = "approved";
+      advertisement.rejection_reason = "";
+      advertisement.reviewed_at = new Date();
+
+      // Do not activate automatically.
+      // Activation also requires verified payment.
+      advertisement.is_active = false;
+
+      // Set reviewed_by here using the authenticated admin's
+      // actual database ID, according to your authentication setup.
+
+      await advertisement.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Promotion approved successfully.",
+        advertisement,
+      });
+    } catch (error) {
+      console.error("Approve promotion error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to approve promotion.",
+      });
+    }
+  }
+);
+// PATCH /admin/advertisements/:id/reject
+
+app.patch(
+  "/admin/advertisements/:id/reject",
+  YOUR_EXISTING_ADMIN_AUTH_MIDDLEWARE,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { rejection_reason } = req.body;
+
+      if (
+        typeof rejection_reason !== "string" ||
+        !rejection_reason.trim()
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Please provide a rejection reason.",
+        });
+      }
+
+      const advertisement = await Advertisement.findById(id);
+
+      if (!advertisement) {
+        return res.status(404).json({
+          success: false,
+          message: "Promotion not found.",
+        });
+      }
+
+      if (advertisement.status === "completed") {
+        return res.status(400).json({
+          success: false,
+          message: "Completed promotions cannot be rejected.",
+        });
+      }
+
+      advertisement.status = "rejected";
+      advertisement.rejection_reason = rejection_reason.trim();
+      advertisement.reviewed_at = new Date();
+      advertisement.is_active = false;
+
+      // Set reviewed_by here using your authenticated admin's
+      // actual database ID.
+
+      await advertisement.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Promotion rejected successfully.",
+        advertisement,
+      });
+    } catch (error) {
+      console.error("Reject promotion error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to reject promotion.",
+      });
+    }
+  }
+);
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
