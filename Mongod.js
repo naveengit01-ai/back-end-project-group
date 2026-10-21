@@ -16,7 +16,7 @@ const Donation = require("./models/Donation");
 const Advertisement = require("./models/Advertisement");
 const BecomeRider = require("./models/BecomeRider");
 const Admin = require("./models/Admin");
-
+const Advertisement = require("./models/Advertisement");
 const aiRoutes = require("./routes/ai");
 const app = express();
 
@@ -3214,6 +3214,529 @@ app.post(
       return res.status(500).json({
         status: "upload_failed",
         message: "Unable to upload your profile photo.",
+      });
+    }
+  }
+);
+const promotionUpload = multer({
+  storage: multer.memoryStorage(),
+
+  limits: {
+    fileSize: 50 * 1024 * 1024, // Maximum 50 MB per file
+    files: 2,
+    fields: 30,
+    fieldSize: 1024 * 1024,
+  },
+
+  fileFilter: (req, file, callback) => {
+    const allowedTypes = {
+      banner: ["image/jpeg", "image/png", "image/webp"],
+      video: ["video/mp4", "video/webm", "video/quicktime"],
+    };
+
+    if (!allowedTypes[file.fieldname]) {
+      return callback(new Error("Unexpected upload field."));
+    }
+
+    if (!allowedTypes[file.fieldname].includes(file.mimetype)) {
+      return callback(
+        new Error(
+          file.fieldname === "banner"
+            ? "Banner must be JPG, PNG, or WEBP."
+            : "Video must be MP4, WEBM, or MOV."
+        )
+      );
+    }
+
+    callback(null, true);
+  },
+});
+async function uploadPromotionFileToDrive(file, title) {
+  const folderId =
+    process.env.GOOGLE_DRIVE_ADVERTISEMENTS_FOLDER_ID;
+
+  if (!folderId) {
+    throw new Error(
+      "Google Drive advertisements folder is not configured."
+    );
+  }
+
+  const extensions = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "video/mp4": "mp4",
+    "video/webm": "webm",
+    "video/quicktime": "mov",
+  };
+
+  const extension = extensions[file.mimetype];
+
+  if (!extension) {
+    throw new Error("Unsupported promotion file type.");
+  }
+
+  const safeTitle = String(title || "promotion")
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, 48);
+
+  const filename =
+    `${safeTitle}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.${extension}`;
+
+  const uploaded = await drive.files.create({
+    requestBody: {
+      name: filename,
+      mimeType: file.mimetype,
+      parents: [folderId],
+    },
+
+    media: {
+      mimeType: file.mimetype,
+      body: Readable.from(file.buffer),
+    },
+
+    fields: "id,name",
+  });
+
+  const fileId = uploaded.data.id;
+
+  try {
+    // Only use public link access for assets intended to be public.
+    await drive.permissions.create({
+      fileId,
+      requestBody: {
+        type: "anyone",
+        role: "reader",
+      },
+    });
+  } catch (error) {
+    try {
+      await drive.files.delete({ fileId });
+    } catch (cleanupError) {
+      console.error(
+        "Drive cleanup failed:",
+        cleanupError.message
+      );
+    }
+
+    throw error;
+  }
+
+  return {
+    fileId,
+    url: `https://drive.google.com/uc?export=view&id=${fileId}`,
+  };
+}
+
+app.post(
+  "/advertisements/request",
+
+  // Receive multipart form data.
+  (req, res, next) => {
+    promotionUpload.fields([
+      { name: "banner", maxCount: 1 },
+      { name: "video", maxCount: 1 },
+    ])(req, res, (error) => {
+      if (!error) {
+        return next();
+      }
+
+      const tooLarge =
+        error instanceof multer.MulterError &&
+        error.code === "LIMIT_FILE_SIZE";
+
+      return res.status(tooLarge ? 413 : 400).json({
+        status: "error",
+        message: tooLarge
+          ? "An uploaded file exceeds the 50 MB limit."
+          : error.message || "Unable to upload files.",
+      });
+    });
+  },
+
+  async (req, res) => {
+    const uploadedFileIds = [];
+
+    try {
+      const {
+        brand_name,
+        company_name,
+        contact_person,
+        contact_email,
+        contact_phone,
+        company_website,
+        title,
+        description,
+        promotion_type,
+        target_url,
+        placement,
+        start_date,
+        end_date,
+        amount_paid,
+        collaboration_type,
+      } = req.body;
+
+      // Validate required fields.
+      const requiredFields = {
+        brand_name,
+        company_name,
+        contact_person,
+        contact_email,
+        contact_phone,
+        title,
+        description,
+        promotion_type,
+        start_date,
+        end_date,
+        amount_paid,
+      };
+
+      const missingFields = Object.entries(requiredFields)
+        .filter(
+          ([, value]) =>
+            value === undefined ||
+            value === null ||
+            String(value).trim() === ""
+        )
+        .map(([key]) => key);
+
+      if (missingFields.length > 0) {
+        return res.status(400).json({
+          status: "error",
+          message: `Missing fields: ${missingFields.join(", ")}`,
+        });
+      }
+
+      // Validate email.
+      const email = String(contact_email)
+        .trim()
+        .toLowerCase();
+
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Please enter a valid business email.",
+        });
+      }
+
+      // Validate budget.
+      const budget = Number(amount_paid);
+
+      if (!Number.isFinite(budget) || budget < 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Budget must be a valid non-negative number.",
+        });
+      }
+
+      // Validate campaign schedule.
+      const startDate = new Date(start_date);
+      const endDate = new Date(end_date);
+
+      if (
+        Number.isNaN(startDate.getTime()) ||
+        Number.isNaN(endDate.getTime()) ||
+        endDate <= startDate
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "End date must be after the start date.",
+        });
+      }
+
+      const allowedTypes = [
+        "banner",
+        "sponsored_post",
+        "video",
+        "product_promotion",
+        "brand_awareness",
+      ];
+
+      const allowedPlacements = [
+        "home_page",
+        "donation_page",
+        "pickup_page",
+        "rider_dashboard",
+        "all_pages",
+      ];
+
+      const allowedCollaborations = [
+        "paid_promotion",
+        "sponsorship",
+        "brand_partnership",
+      ];
+
+      if (!allowedTypes.includes(promotion_type)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid promotion type.",
+        });
+      }
+
+      if (
+        placement &&
+        !allowedPlacements.includes(placement)
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid promotion placement.",
+        });
+      }
+
+      if (
+        collaboration_type &&
+        !allowedCollaborations.includes(collaboration_type)
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid collaboration type.",
+        });
+      }
+
+      // Get uploaded files.
+      const banner = req.files?.banner?.[0] || null;
+      const video = req.files?.video?.[0] || null;
+
+      // Additional banner size limit: 5 MB.
+      if (banner && banner.size > 5 * 1024 * 1024) {
+        return res.status(413).json({
+          status: "error",
+          message: "Banner image must be 5 MB or smaller.",
+        });
+      }
+
+      // Validate optional URLs.
+      const validateUrl = (value, label) => {
+        if (!value) return "";
+
+        let parsed;
+
+        try {
+          parsed = new URL(String(value));
+        } catch {
+          throw new Error(`${label} is not a valid URL.`);
+        }
+
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          throw new Error(`${label} must use HTTP or HTTPS.`);
+        }
+
+        return parsed.toString();
+      };
+
+      let companyWebsite;
+      let destinationUrl;
+
+      try {
+        companyWebsite = validateUrl(
+          company_website,
+          "Company website"
+        );
+
+        destinationUrl = validateUrl(
+          target_url,
+          "Destination URL"
+        );
+      } catch (error) {
+        return res.status(400).json({
+          status: "error",
+          message: error.message,
+        });
+      }
+
+      // Upload banner and video to Google Drive.
+      let imageUrl = "";
+      let videoUrl = "";
+
+      if (banner) {
+        const result = await uploadPromotionFileToDrive(
+          banner,
+          title
+        );
+
+        uploadedFileIds.push(result.fileId);
+        imageUrl = result.url;
+      }
+
+      if (video) {
+        const result = await uploadPromotionFileToDrive(
+          video,
+          title
+        );
+
+        uploadedFileIds.push(result.fileId);
+        videoUrl = result.url;
+      }
+
+      // Save campaign in MongoDB.
+      const advertisement = await Advertisement.create({
+        brand_name: String(brand_name).trim(),
+        company_name: String(company_name).trim(),
+        contact_person: String(contact_person).trim(),
+        contact_email: email,
+        contact_phone: String(contact_phone).trim(),
+        company_website: companyWebsite,
+
+        title: String(title).trim(),
+        description: String(description).trim(),
+        promotion_type,
+
+        image_url: imageUrl,
+        video_url: videoUrl,
+        target_url: destinationUrl,
+
+        placement: placement || "home_page",
+
+        start_date: startDate,
+        end_date: endDate,
+
+        amount_paid: budget,
+        currency: "INR",
+        payment_status: "pending",
+        payment_reference: "",
+
+        collaboration_type:
+          collaboration_type || "paid_promotion",
+
+        status: "pending",
+        rejection_reason: "",
+        reviewed_by: null,
+        reviewed_at: null,
+
+        is_active: false,
+      });
+
+      // Send confirmation email.
+      // This assumes your existing sendEmail helper accepts
+      // { to, subject, html }; adapt if its signature differs.
+      let emailSent = false;
+
+      try {
+        const escapeHtml = (value) =>
+          String(value).replace(/[&<>"']/g, (character) => ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+          })[character]);
+
+        await sendEmail({
+          to: email,
+          subject: "DWJD received your brand promotion request",
+
+          html: `
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:24px">
+              <h1>DWJD — Brand Promotion Request</h1>
+
+              <p>Hello ${escapeHtml(contact_person)},</p>
+
+              <p>
+                We received your promotion request for
+                <strong>${escapeHtml(title)}</strong>.
+              </p>
+
+              <p>
+                Our team will review your request within
+                <strong>24 hours</strong> and contact you by email
+                about the next steps and payment confirmation.
+              </p>
+
+              <p>
+                Your request is pending review.
+                Submission does not mean the campaign is approved
+                or that payment has been received.
+              </p>
+
+              <p>Thank you,<br/>DWJD Team</p>
+            </div>
+          `,
+        });
+
+        emailSent = true;
+      } catch (emailError) {
+        console.error(
+          "Promotion email failed:",
+          emailError.message
+        );
+      }
+
+      return res.status(201).json({
+        status: "success",
+
+        message: emailSent
+          ? "Promotion request submitted. Check your email; DWJD will review it within 24 hours."
+          : "Promotion request saved. Email delivery failed, but DWJD will review it within 24 hours.",
+
+        email_sent: emailSent,
+
+        advertisement: {
+          _id: advertisement._id,
+          brand_name: advertisement.brand_name,
+          title: advertisement.title,
+          image_url: advertisement.image_url,
+          video_url: advertisement.video_url,
+          status: advertisement.status,
+          payment_status: advertisement.payment_status,
+          is_active: advertisement.is_active,
+          createdAt: advertisement.createdAt,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Promotion submission error:",
+        error
+      );
+
+      // Clean up files if the operation failed after uploading.
+      for (const fileId of uploadedFileIds) {
+        try {
+          await drive.files.delete({ fileId });
+        } catch (cleanupError) {
+          console.error(
+            "Google Drive cleanup failed:",
+            cleanupError.message
+          );
+        }
+      }
+
+      if (error.name === "ValidationError") {
+        return res.status(400).json({
+          status: "error",
+          message: error.message,
+        });
+      }
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to submit promotion request.",
+      });
+    }
+  }
+);
+app.get(
+  "/admin/advertisements",
+  requireAdmin, // Replace with your actual admin authorization middleware.
+  async (req, res) => {
+    try {
+      const advertisements = await Advertisement.find({})
+        .sort({ createdAt: -1 })
+        .lean();
+
+      return res.status(200).json({
+        status: "success",
+        count: advertisements.length,
+        advertisements,
+      });
+    } catch (error) {
+      console.error(
+        "Fetch advertisements error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to fetch promotion requests.",
       });
     }
   }
