@@ -4071,7 +4071,7 @@ app.patch(
 );// REJECT PROMOTION
 app.patch(
   "/admin/advertisements/:id/reject",
-  YOUR_ADMIN_MIDDLEWARE,
+  requireAdmin,
   async (req, res) => {
     try {
       const { id } = req.params;
