@@ -4019,9 +4019,10 @@ app.patch(
     }
   }
 );
-// PATCH /admin/advertisements/:id/approve
+// ==========================================
+// ADMIN: APPROVE ADVERTISEMENT
+// ==========================================
 
-// APPROVE PROMOTION
 app.patch(
   "/admin/advertisements/:id/approve",
   requireAdmin,
@@ -4029,18 +4030,25 @@ app.patch(
     try {
       const { id } = req.params;
 
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid promotion ID.",
+        });
+      }
+
       const advertisement = await Advertisement.findById(id);
 
       if (!advertisement) {
         return res.status(404).json({
-          success: false,
-          message: "Promotion not found.",
+          status: "error",
+          message: "Promotion not found in the database.",
         });
       }
 
       if (advertisement.status === "completed") {
         return res.status(400).json({
-          success: false,
+          status: "error",
           message: "Completed promotions cannot be approved.",
         });
       }
@@ -4048,27 +4056,25 @@ app.patch(
       advertisement.status = "approved";
       advertisement.rejection_reason = "";
       advertisement.reviewed_at = new Date();
-
-      // Approval does not automatically activate a campaign.
       advertisement.is_active = false;
 
       await advertisement.save();
 
       return res.status(200).json({
-        success: true,
+        status: "success",
         message: "Promotion approved successfully.",
         advertisement,
       });
     } catch (error) {
-      console.error("Approve promotion error:", error);
+      console.error("Approve advertisement error:", error);
 
       return res.status(500).json({
-        success: false,
-        message: "Failed to approve promotion.",
+        status: "error",
+        message: "Failed to approve advertisement.",
       });
     }
   }
-);// REJECT PROMOTION
+);
 app.patch(
   "/admin/advertisements/:id/reject",
   requireAdmin,
