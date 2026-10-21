@@ -3713,33 +3713,26 @@ app.post(
     }
   }
 );
-app.get(
-  "/admin/advertisements",
-  requireAdmin, // Replace with your actual admin authorization middleware.
-  async (req, res) => {
-    try {
-      const advertisements = await Advertisement.find({})
-        .sort({ createdAt: -1 })
-        .lean();
+app.get("/admin/advertisements", async (req, res) => {
+  try {
+    const advertisements = await Advertisement.find({})
+      .sort({ createdAt: -1 })
+      .lean();
 
-      return res.status(200).json({
-        status: "success",
-        count: advertisements.length,
-        advertisements,
-      });
-    } catch (error) {
-      console.error(
-        "Fetch advertisements error:",
-        error
-      );
+    return res.json({
+      status: "success",
+      count: advertisements.length,
+      advertisements,
+    });
+  } catch (error) {
+    console.error("Error fetching advertisements:", error);
 
-      return res.status(500).json({
-        status: "error",
-        message: "Unable to fetch promotion requests.",
-      });
-    }
+    return res.status(500).json({
+      status: "error",
+      message: "Failed to fetch advertisements",
+    });
   }
-);
+});
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
