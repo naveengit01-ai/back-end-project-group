@@ -3797,28 +3797,177 @@ app.post(
     }
   }
 );
-app.get("/admin/advertisements", async (req, res) => {
-  try {
-    const advertisements = await Advertisement.find({})
-      .sort({ createdAt: -1 })
-      .lean();
+/* ============================================
+   ADMIN ADVERTISEMENT MANAGEMENT
+============================================ */
 
-    return res.json({
-      status: "success",
-      count: advertisements.length,
-      advertisements,
-    });
-  } catch (error) {
-    console.error("Error fetching advertisements:", error);
 
-    return res.status(500).json({
-      status: "error",
-      message: "Failed to fetch advertisements",
-    });
+/* ============================================
+   GET ALL ADVERTISEMENTS
+   GET /admin/advertisements
+============================================ */
+
+app.get(
+  "/admin/advertisements",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const advertisements = await Advertisement.find({})
+        .sort({ createdAt: -1 })
+        .lean();
+
+      return res.status(200).json({
+        status: "success",
+        count: advertisements.length,
+        advertisements,
+      });
+    } catch (error) {
+      console.error("Fetch advertisements error:", error);
+
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to fetch advertisements.",
+      });
+    }
   }
-});
-// PATCH /admin/advertisements/:id/approve
+);
 
+
+/* ============================================
+   APPROVE PROMOTION
+   PATCH /admin/advertisements/:id/approve
+============================================ */
+
+app.patch(
+  "/admin/advertisements/:id/approve",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid promotion ID.",
+        });
+      }
+
+      const advertisement = await Advertisement.findById(id);
+
+      if (!advertisement) {
+        return res.status(404).json({
+          status: "error",
+          message: "Promotion not found.",
+        });
+      }
+
+      if (advertisement.status === "completed") {
+        return res.status(400).json({
+          status: "error",
+          message: "Completed promotions cannot be approved.",
+        });
+      }
+
+      advertisement.status = "approved";
+      advertisement.rejection_reason = "";
+      advertisement.reviewed_at = new Date();
+      advertisement.reviewed_by = req.admin.id;
+
+      // Approval alone must not activate the campaign.
+      // Payment and activation rules are handled separately.
+      advertisement.is_active = false;
+
+      await advertisement.save();
+
+      return res.status(200).json({
+        status: "success",
+        message: "Promotion approved successfully.",
+        advertisement,
+      });
+    } catch (error) {
+      console.error("Approve promotion error:", error);
+
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to approve promotion.",
+      });
+    }
+  }
+);
+
+
+/* ============================================
+   REJECT PROMOTION
+   PATCH /admin/advertisements/:id/reject
+============================================ */
+
+app.patch(
+  "/admin/advertisements/:id/reject",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { rejection_reason } = req.body;
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid promotion ID.",
+        });
+      }
+
+      if (
+        typeof rejection_reason !== "string" ||
+        rejection_reason.trim().length < 5
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Please provide a rejection reason of at least 5 characters.",
+        });
+      }
+
+      const advertisement = await Advertisement.findById(id);
+
+      if (!advertisement) {
+        return res.status(404).json({
+          status: "error",
+          message: "Promotion not found.",
+        });
+      }
+
+      if (advertisement.status === "completed") {
+        return res.status(400).json({
+          status: "error",
+          message: "Completed promotions cannot be rejected.",
+        });
+      }
+
+      advertisement.status = "rejected";
+      advertisement.rejection_reason = rejection_reason.trim();
+      advertisement.reviewed_at = new Date();
+      advertisement.reviewed_by = req.admin.id;
+
+      // A rejected promotion must never remain active.
+      advertisement.is_active = false;
+
+      await advertisement.save();
+
+      return res.status(200).json({
+        status: "success",
+        message: "Promotion rejected successfully.",
+        advertisement,
+      });
+    } catch (error) {
+      console.error("Reject promotion error:", error);
+
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to reject promotion.",
+      });
+    }
+  }
+);
 app.patch(
   "/admin/advertisements/:id/approve",
   YOUR_EXISTING_ADMIN_AUTH_MIDDLEWARE,
