@@ -3970,7 +3970,7 @@ app.patch(
 );
 app.patch(
   "/admin/advertisements/:id/approve",
-  YOUR_EXISTING_ADMIN_AUTH_MIDDLEWARE,
+  requireAdmin,
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -4024,7 +4024,7 @@ app.patch(
 // APPROVE PROMOTION
 app.patch(
   "/admin/advertisements/:id/approve",
-  YOUR_ADMIN_MIDDLEWARE,
+  requireAdmin,
   async (req, res) => {
     try {
       const { id } = req.params;
