@@ -6,7 +6,7 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const crypto = require("crypto");
-
+const cron = require("node-cron");
 const multer = require("multer");
 const { google } = require("googleapis");
 const { Readable } = require("stream");
@@ -43,7 +43,16 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: "8mb" }));
+app.use(
+  express.json({
+    limit: "8mb",
+    verify: (req, res, buf) => {
+      if (req.originalUrl === "/webhooks/razorpay") {
+        req.rawBody = Buffer.from(buf);
+      }
+    },
+  })
+);
 app.use("/ai", aiRoutes);
 
 /* ================= DATABASE ================= */
@@ -3801,9 +3810,25 @@ app.post(
    ADMIN ADVERTISEMENT MANAGEMENT
 ============================================ */
 
-
 /* ============================================
-   GET ALL ADVERTISEMENTS
+   RAZORPAY CONFIGURATION
+============================================ */
+
+if (
+  !process.env.RAZORPAY_KEY_ID ||
+  !process.env.RAZORPAY_KEY_SECRET
+) {
+  console.warn(
+    "Razorpay configuration is missing. Payment-link creation will fail until credentials are configured."
+  );
+}
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+/* ============================================
+   ADMIN: GET ALL ADVERTISEMENTS
    GET /admin/advertisements
 ============================================ */
 
@@ -3812,14 +3837,42 @@ app.get(
   requireAdmin,
   async (req, res) => {
     try {
+      // Fetch all advertisements, newest first.
       const advertisements = await Advertisement.find({})
+        .populate("reviewed_by", "username email")
         .sort({ createdAt: -1 })
         .lean();
 
       return res.status(200).json({
         status: "success",
         count: advertisements.length,
-        advertisements,
+
+        advertisements: advertisements.map((ad) => ({
+          ...ad,
+
+          // Campaign approval details
+          status: ad.status || "pending",
+          rejection_reason: ad.rejection_reason || "",
+          reviewed_at: ad.reviewed_at || null,
+          reviewed_by: ad.reviewed_by || null,
+
+          // Payment details
+          payment_status: ad.payment_status || "pending",
+          approved_amount: ad.approved_amount ?? null,
+          currency: ad.currency || "INR",
+
+          // Razorpay payment-link details
+          payment_link_id: ad.payment_link_id || "",
+          payment_link_url: ad.payment_link_url || "",
+          payment_link_sent_at: ad.payment_link_sent_at || null,
+
+          // Verified payment details
+          payment_reference: ad.payment_reference || "",
+          payment_paid_at: ad.payment_paid_at || null,
+
+          // Activation
+          is_active: ad.is_active === true,
+        })),
       });
     } catch (error) {
       console.error("Fetch advertisements error:", error);
@@ -3832,10 +3885,15 @@ app.get(
   }
 );
 
-
 /* ============================================
-   APPROVE PROMOTION
+   ADMIN: APPROVE PROMOTION
    PATCH /admin/advertisements/:id/approve
+
+   Request body:
+   {
+     "approved_amount": 5000,
+     "currency": "INR"
+   }
 ============================================ */
 
 app.patch(
@@ -3844,7 +3902,9 @@ app.patch(
   async (req, res) => {
     try {
       const { id } = req.params;
+      const { approved_amount, currency = "INR" } = req.body;
 
+      // 1. Validate the promotion ID.
       if (!mongoose.Types.ObjectId.isValid(id)) {
         return res.status(400).json({
           status: "error",
@@ -3852,6 +3912,41 @@ app.patch(
         });
       }
 
+      // 2. Validate the approved amount.
+      const amount = Number(approved_amount);
+
+      if (
+        approved_amount === undefined ||
+        approved_amount === null ||
+        approved_amount === "" ||
+        !Number.isFinite(amount) ||
+        amount <= 0
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Please provide a valid approved amount greater than zero.",
+        });
+      }
+
+      // 3. Validate the currency.
+      const allowedCurrencies = ["INR", "USD", "EUR", "GBP"];
+
+      if (!allowedCurrencies.includes(currency)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Unsupported currency.",
+        });
+      }
+
+      // Razorpay integration in this workflow initially uses INR.
+      if (currency !== "INR") {
+        return res.status(400).json({
+          status: "error",
+          message: "Promotion payments currently support INR only.",
+        });
+      }
+
+      // 4. Find the promotion.
       const advertisement = await Advertisement.findById(id);
 
       if (!advertisement) {
@@ -3861,6 +3956,7 @@ app.patch(
         });
       }
 
+      // 5. Do not approve completed promotions.
       if (advertisement.status === "completed") {
         return res.status(400).json({
           status: "error",
@@ -3868,24 +3964,66 @@ app.patch(
         });
       }
 
+      // 6. Do not approve rejected promotions without
+      // an explicit re-submission/review workflow.
+      if (advertisement.status === "rejected") {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "This promotion was rejected. It must be resubmitted before approval.",
+        });
+      }
+
+      // 7. Do not change the amount after payment.
+      if (advertisement.payment_status === "paid") {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "This promotion has already been paid for. The approved amount cannot be changed.",
+        });
+      }
+
+      // 8. Record approval and amount.
       advertisement.status = "approved";
+      advertisement.approved_amount = amount;
+      advertisement.currency = "INR";
       advertisement.rejection_reason = "";
       advertisement.reviewed_at = new Date();
+
+      // Use the authenticated administrator's ID.
       advertisement.reviewed_by = req.admin.id;
 
-      // Approval alone must not activate the campaign.
-      // Payment and activation rules are handled separately.
+      // Approval alone must never activate the campaign.
       advertisement.is_active = false;
+
+      // If an unpaid promotion's amount changes, an old
+      // payment link must not remain usable by this workflow.
+      // Payment-link generation will create a fresh link.
+      advertisement.payment_link_id = "";
+      advertisement.payment_link_url = "";
+      advertisement.payment_link_sent_at = null;
+      advertisement.payment_reference = "";
+      advertisement.payment_paid_at = null;
+      advertisement.payment_status = "pending";
 
       await advertisement.save();
 
       return res.status(200).json({
         status: "success",
-        message: "Promotion approved successfully.",
+        message:
+          "Promotion approved and amount recorded. Generate a payment link for the owner next.",
         advertisement,
       });
     } catch (error) {
       console.error("Approve promotion error:", error);
+
+      // Handle schema validation errors.
+      if (error.name === "ValidationError") {
+        return res.status(400).json({
+          status: "error",
+          message: error.message,
+        });
+      }
 
       return res.status(500).json({
         status: "error",
@@ -3895,6 +4033,934 @@ app.patch(
   }
 );
 
+/* ============================================
+   ADMIN: GENERATE RAZORPAY PAYMENT LINK
+   POST /admin/advertisements/:id/payment-link
+
+   Requires:
+   - Approved promotion
+   - Valid approved amount
+   - Owner contact email
+============================================ */
+
+app.post(
+  "/admin/advertisements/:id/payment-link",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      // 1. Validate promotion ID.
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid promotion ID.",
+        });
+      }
+
+      // 2. Verify Razorpay configuration.
+      if (
+        !process.env.RAZORPAY_KEY_ID ||
+        !process.env.RAZORPAY_KEY_SECRET
+      ) {
+        return res.status(500).json({
+          status: "error",
+          message: "Razorpay is not configured on the server.",
+        });
+      }
+
+      // 3. Find promotion.
+      const advertisement = await Advertisement.findById(id);
+
+      if (!advertisement) {
+        return res.status(404).json({
+          status: "error",
+          message: "Promotion not found.",
+        });
+      }
+
+      // 4. Promotion must be approved.
+      if (advertisement.status !== "approved") {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Only approved promotions can receive payment links.",
+        });
+      }
+
+      // 5. Validate approved amount.
+      const amount = Number(advertisement.approved_amount);
+
+      if (
+        !Number.isFinite(amount) ||
+        amount <= 0
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "The promotion does not have a valid GM-approved amount.",
+        });
+      }
+
+      // 6. This integration initially supports INR only.
+      if (advertisement.currency !== "INR") {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Razorpay payment links in this workflow support INR only.",
+        });
+      }
+
+      // 7. Validate owner email.
+      const email = String(
+        advertisement.contact_email || ""
+      ).trim();
+
+      const validEmail =
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+      if (!validEmail) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "The promotion does not have a valid owner contact email.",
+        });
+      }
+
+      // 8. Don't generate another link after payment.
+      if (advertisement.payment_status === "paid") {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "Payment has already been received for this promotion.",
+        });
+      }
+
+      // 9. Don't create duplicate links on repeated requests.
+      if (
+        advertisement.payment_link_id &&
+        advertisement.payment_link_url &&
+        advertisement.payment_status === "pending"
+      ) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "A payment link already exists. Use the existing link or invalidate it through Razorpay before generating a replacement.",
+          payment_link_url:
+            advertisement.payment_link_url,
+          payment_link_id:
+            advertisement.payment_link_id,
+        });
+      }
+
+      // 10. Create the Razorpay Payment Link.
+      // Razorpay expects the amount in the smallest currency unit.
+      // For INR, 5000 rupees = 500000 paise.
+      const amountInPaise = Math.round(amount * 100);
+
+      if (
+        !Number.isSafeInteger(amountInPaise) ||
+        amountInPaise <= 0
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "The approved amount is invalid.",
+        });
+      }
+
+      const paymentLink = await razorpay.paymentLink.create({
+        amount: amountInPaise,
+        currency: "INR",
+
+        accept_partial: false,
+
+        description:
+          `DWJD promotion payment - ${
+            advertisement.brand_name || advertisement.title
+          }`,
+
+        customer: {
+          name:
+            advertisement.contact_person ||
+            advertisement.brand_name ||
+            "Promotion Owner",
+          email,
+          contact:
+            advertisement.contact_phone
+              ? String(advertisement.contact_phone)
+              : undefined,
+        },
+
+        reference_id: `ad_${advertisement._id}`,
+
+        notes: {
+          advertisement_id: String(advertisement._id),
+          brand_name: String(
+            advertisement.brand_name || ""
+          ).slice(0, 256),
+        },
+
+        reminder_enable: true,
+      });
+
+      // 11. Save payment details before sending email.
+      advertisement.payment_link_id = paymentLink.id;
+      advertisement.payment_link_url =
+        paymentLink.short_url;
+      advertisement.payment_link_sent_at = new Date();
+      advertisement.payment_status = "pending";
+      advertisement.is_active = false;
+
+      await advertisement.save();
+
+      // 12. Escape dynamic values used in the HTML email.
+      const escapeHtml = (value) =>
+        String(value ?? "").replace(
+          /[&<>"']/g,
+          (character) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[character]
+        );
+
+      const brandName = escapeHtml(
+        advertisement.brand_name ||
+        advertisement.title ||
+        "your promotion"
+      );
+
+      const ownerName = escapeHtml(
+        advertisement.contact_person ||
+        "Promotion Owner"
+      );
+
+      const paymentUrl = escapeHtml(
+        paymentLink.short_url
+      );
+
+      // 13. Send payment link using your existing Brevo helper.
+      try {
+        await sendEmail({
+          to: email,
+          subject: "DWJD promotion — payment required",
+
+          html: `
+            <div style="
+              font-family: Arial, sans-serif;
+              max-width: 600px;
+              margin: auto;
+              padding: 24px;
+              color: #222;
+            ">
+              <h2>DWJD — Promotion Payment</h2>
+
+              <p>Hello ${ownerName},</p>
+
+              <p>
+                Your promotion for
+                <strong>${brandName}</strong>
+                has been approved.
+              </p>
+
+              <p>
+                <strong>Approved amount:</strong>
+                ₹${amount.toFixed(2)}
+              </p>
+
+              <p>
+                Please use the secure Razorpay payment link below
+                to complete your payment.
+              </p>
+
+              <p style="margin: 28px 0;">
+                <a
+                  href="${paymentUrl}"
+                  style="
+                    background: #146c43;
+                    color: #fff;
+                    padding: 14px 24px;
+                    border-radius: 6px;
+                    text-decoration: none;
+                    display: inline-block;
+                    font-weight: bold;
+                  "
+                >
+                  Pay Now
+                </a>
+              </p>
+
+              <p>
+                Your promotion will not become active until
+                the payment is verified and the campaign is
+                eligible for activation.
+              </p>
+
+              <p>
+                Thank you,<br />
+                DWJD Team
+              </p>
+            </div>
+          `,
+        });
+      } catch (emailError) {
+        console.error(
+          "Payment link email failed:",
+          emailError.message
+        );
+
+        // The Razorpay link was already created and saved.
+        // Return it so the administrator can retry delivery
+        // using a dedicated email-retry API later.
+        return res.status(502).json({
+          status: "partial_success",
+          message:
+            "Payment link was created and saved, but the email could not be sent. Do not generate another link; retry email delivery using the existing link.",
+          payment_link_id: paymentLink.id,
+          payment_link_url: paymentLink.short_url,
+          email_sent: false,
+          advertisement_id: String(advertisement._id),
+        });
+      }
+
+      // 14. Success response.
+      return res.status(201).json({
+        status: "success",
+        message:
+          "Razorpay payment link created and emailed to the promotion owner.",
+
+        email_sent: true,
+
+        payment: {
+          payment_link_id: paymentLink.id,
+          payment_link_url: paymentLink.short_url,
+          amount,
+          currency: "INR",
+          status: paymentLink.status,
+        },
+
+        advertisement_id: String(advertisement._id),
+      });
+    } catch (error) {
+      console.error(
+        "Generate Razorpay payment link error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Failed to generate the Razorpay payment link.",
+      });
+    }
+  }
+);
+
+// ============================================
+// API 4: RAZORPAY PAYMENT WEBHOOK
+// ============================================
+
+app.post("/webhooks/razorpay", async (req, res) => {
+  try {
+    // 1. Check webhook configuration
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+
+    if (!webhookSecret) {
+      console.error("RAZORPAY_WEBHOOK_SECRET is not configured.");
+
+      return res.status(500).json({
+        success: false,
+        message: "Webhook configuration error.",
+      });
+    }
+
+    // 2. Ensure the original request body is available
+    if (!req.rawBody || !Buffer.isBuffer(req.rawBody)) {
+      return res.status(400).json({
+        success: false,
+        message: "Raw webhook body is missing.",
+      });
+    }
+
+    // 3. Read Razorpay's signature header
+    const receivedSignature = req.headers["x-razorpay-signature"];
+
+    if (
+      typeof receivedSignature !== "string" ||
+      !/^[a-f0-9]{64}$/i.test(receivedSignature)
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid webhook signature.",
+      });
+    }
+
+    // 4. Calculate the expected HMAC signature
+    const expectedSignature = crypto
+      .createHmac("sha256", webhookSecret)
+      .update(req.rawBody)
+      .digest();
+
+    const receivedSignatureBuffer = Buffer.from(
+      receivedSignature,
+      "hex"
+    );
+
+    // 5. Compare signatures securely
+    if (
+      expectedSignature.length !== receivedSignatureBuffer.length ||
+      !crypto.timingSafeEqual(
+        expectedSignature,
+        receivedSignatureBuffer
+      )
+    ) {
+      console.warn("Razorpay webhook signature verification failed.");
+
+      return res.status(401).json({
+        success: false,
+        message: "Webhook signature verification failed.",
+      });
+    }
+
+    // 6. Read the verified event
+    const event = req.body?.event;
+
+    // We process payment_link.paid only.
+    // Other valid Razorpay events can safely be acknowledged.
+    if (event !== "payment_link.paid") {
+      return res.status(200).json({
+        success: true,
+        message: "Webhook received; event ignored.",
+      });
+    }
+
+    // 7. Extract the payment-link and payment details
+    const paymentLink =
+      req.body?.payload?.payment_link?.entity;
+
+    const payment =
+      req.body?.payload?.payment?.entity;
+
+    if (!paymentLink || !payment) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment-link or payment details are missing.",
+      });
+    }
+
+    const paymentLinkId = paymentLink.id;
+    const paymentId = payment.id;
+
+    if (!paymentLinkId || !paymentId) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment identifiers are missing.",
+      });
+    }
+
+    // 8. Locate the promotion using its stored payment-link ID
+    const advertisement = await Advertisement.findOne({
+      payment_link_id: paymentLinkId,
+    });
+
+    if (!advertisement) {
+      console.error(
+        "No promotion found for Razorpay payment link:",
+        paymentLinkId
+      );
+
+      // Acknowledge the event to avoid endless retries.
+      // Investigate this mismatch using your server logs.
+      return res.status(200).json({
+        success: true,
+        message: "No matching promotion found; event recorded for investigation.",
+      });
+    }
+
+    // 9. Confirm the payment link refers to this promotion
+    const expectedReferenceId = `ad_${advertisement._id}`;
+
+    if (paymentLink.reference_id !== expectedReferenceId) {
+      console.error(
+        "Payment-link reference mismatch:",
+        paymentLinkId
+      );
+
+      return res.status(400).json({
+        success: false,
+        message: "Payment-link reference mismatch.",
+      });
+    }
+
+    // 10. Confirm the payment details
+    const expectedAmountPaise = Math.round(
+      Number(advertisement.approved_amount) * 100
+    );
+
+    const validAmount =
+      Number.isSafeInteger(expectedAmountPaise) &&
+      Number(paymentLink.amount) === expectedAmountPaise &&
+      Number(payment.amount) === expectedAmountPaise;
+
+    const validCurrency =
+      advertisement.currency === "INR" &&
+      paymentLink.currency === "INR" &&
+      payment.currency === "INR";
+
+    const validPaymentStatus = payment.status === "captured";
+
+    const validLinkStatus = paymentLink.status === "paid";
+
+    if (
+      !validAmount ||
+      !validCurrency ||
+      !validPaymentStatus ||
+      !validLinkStatus
+    ) {
+      console.error("Razorpay payment validation failed:", {
+        paymentLinkId,
+        paymentId,
+        validAmount,
+        validCurrency,
+        validPaymentStatus,
+        validLinkStatus,
+      });
+
+      return res.status(400).json({
+        success: false,
+        message: "Payment validation failed.",
+      });
+    }
+
+    // 11. Ensure the payment link belongs to the approved amount
+    if (
+      advertisement.status !== "approved" ||
+      !advertisement.approved_amount ||
+      Number(advertisement.approved_amount) <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Promotion is not eligible for payment confirmation.",
+      });
+    }
+
+    // 12. Handle duplicate webhook deliveries idempotently
+    if (advertisement.payment_status === "paid") {
+      if (advertisement.payment_reference === paymentId) {
+        return res.status(200).json({
+          success: true,
+          message: "Payment was already recorded.",
+        });
+      }
+
+      console.error(
+        "Different payment received for an already-paid promotion:",
+        {
+          advertisementId: String(advertisement._id),
+          existingPaymentId: advertisement.payment_reference,
+          incomingPaymentId: paymentId,
+        }
+      );
+
+      return res.status(409).json({
+        success: false,
+        message: "Promotion is already marked as paid.",
+      });
+    }
+
+    // 13. Update payment information
+    advertisement.payment_status = "paid";
+    advertisement.payment_reference = paymentId;
+
+    advertisement.payment_paid_at = payment.created_at
+      ? new Date(payment.created_at * 1000)
+      : new Date();
+
+    // Payment does not automatically activate the promotion.
+    advertisement.is_active = false;
+
+    await advertisement.save();
+
+    // 14. Respond successfully to Razorpay
+    console.log("Promotion payment verified successfully:", {
+      advertisementId: String(advertisement._id),
+      paymentLinkId,
+      paymentId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Payment verified and recorded successfully.",
+      advertisement_id: String(advertisement._id),
+      payment_status: advertisement.payment_status,
+    });
+  } catch (error) {
+    console.error(
+      "Razorpay webhook processing error:",
+      error.response?.data || error.message
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Webhook processing failed.",
+    });
+  }
+});
+// ============================================
+// API 4: RAZORPAY PAYMENT WEBHOOK
+// ============================================
+
+app.post("/webhooks/razorpay", async (req, res) => {
+  try {
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+
+    if (!webhookSecret) {
+      console.error("RAZORPAY_WEBHOOK_SECRET is missing");
+
+      return res.status(500).json({
+        success: false,
+        message: "Webhook configuration error",
+      });
+    }
+
+    // Verify the original request body exists
+    if (!Buffer.isBuffer(req.rawBody)) {
+      return res.status(400).json({
+        success: false,
+        message: "Raw request body is missing",
+      });
+    }
+
+    // Read Razorpay signature
+    const signature = req.headers["x-razorpay-signature"];
+
+    if (
+      typeof signature !== "string" ||
+      !/^[a-f0-9]{64}$/i.test(signature)
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid webhook signature",
+      });
+    }
+
+    // Generate expected signature
+    const expectedSignature = crypto
+      .createHmac("sha256", webhookSecret)
+      .update(req.rawBody)
+      .digest();
+
+    const receivedSignature = Buffer.from(signature, "hex");
+
+    // Compare signatures safely
+    if (
+      expectedSignature.length !== receivedSignature.length ||
+      !crypto.timingSafeEqual(
+        expectedSignature,
+        receivedSignature
+      )
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Webhook signature verification failed",
+      });
+    }
+
+    // Only process payment_link.paid
+    const event = req.body?.event;
+
+    if (event !== "payment_link.paid") {
+      return res.status(200).json({
+        success: true,
+        message: "Event acknowledged",
+      });
+    }
+
+    // Extract Razorpay entities
+    const paymentLink =
+      req.body?.payload?.payment_link?.entity;
+
+    const payment =
+      req.body?.payload?.payment?.entity;
+
+    if (!paymentLink || !payment) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment information is missing",
+      });
+    }
+
+    if (!paymentLink.id || !payment.id) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment identifiers are missing",
+      });
+    }
+
+    // Find the promotion associated with this payment link
+    const advertisement = await Advertisement.findOne({
+      payment_link_id: paymentLink.id,
+    });
+
+    if (!advertisement) {
+      console.error(
+        "No promotion found for payment link:",
+        paymentLink.id
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: "No matching promotion found",
+      });
+    }
+
+    // Validate the payment-link reference
+    const expectedReference = `ad_${advertisement._id}`;
+
+    if (paymentLink.reference_id !== expectedReference) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment reference mismatch",
+      });
+    }
+
+    // Validate the expected amount
+    const expectedAmount = Math.round(
+      Number(advertisement.approved_amount) * 100
+    );
+
+    const validAmount =
+      Number.isSafeInteger(expectedAmount) &&
+      Number(paymentLink.amount) === expectedAmount &&
+      Number(payment.amount) === expectedAmount;
+
+    // Validate currency and statuses
+    const validCurrency =
+      advertisement.currency === "INR" &&
+      paymentLink.currency === "INR" &&
+      payment.currency === "INR";
+
+    const validPayment =
+      payment.status === "captured" &&
+      paymentLink.status === "paid";
+
+    if (!validAmount || !validCurrency || !validPayment) {
+      console.error("Razorpay payment validation failed", {
+        paymentLinkId: paymentLink.id,
+        paymentId: payment.id,
+        validAmount,
+        validCurrency,
+        validPayment,
+      });
+
+      return res.status(400).json({
+        success: false,
+        message: "Payment validation failed",
+      });
+    }
+
+    // Ensure the promotion was approved
+    if (
+      advertisement.status !== "approved" ||
+      Number(advertisement.approved_amount) <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Promotion is not eligible for payment confirmation",
+      });
+    }
+
+    // Idempotency: accept a duplicate delivery of the same payment
+    if (advertisement.payment_status === "paid") {
+      if (advertisement.payment_reference === payment.id) {
+        return res.status(200).json({
+          success: true,
+          message: "Payment already recorded",
+        });
+      }
+
+      return res.status(409).json({
+        success: false,
+        message: "Promotion is already marked as paid",
+      });
+    }
+
+    // Record verified payment
+    advertisement.payment_status = "paid";
+    advertisement.payment_reference = payment.id;
+
+    advertisement.payment_paid_at = payment.created_at
+      ? new Date(payment.created_at * 1000)
+      : new Date();
+
+    // Payment alone must not activate the promotion
+    advertisement.is_active = false;
+
+    await advertisement.save();
+
+    console.log("Promotion payment verified:", {
+      advertisementId: String(advertisement._id),
+      paymentLinkId: paymentLink.id,
+      paymentId: payment.id,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Payment verified successfully",
+      advertisement_id: String(advertisement._id),
+      payment_status: "paid",
+    });
+  } catch (error) {
+    console.error(
+      "Razorpay webhook error:",
+      error.response?.data || error.message
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Webhook processing failed",
+    });
+  }
+});
+// ============================================
+// API 5: ACTIVATE PROMOTION
+// ============================================
+
+app.patch(
+  "/admin/advertisements/:id/activate",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      // 1. Validate advertisement ID
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid advertisement ID.",
+        });
+      }
+
+      // 2. Find the advertisement
+      const advertisement = await Advertisement.findById(id);
+
+      if (!advertisement) {
+        return res.status(404).json({
+          success: false,
+          message: "Promotion not found.",
+        });
+      }
+
+      // 3. Ensure the promotion has been approved
+      if (advertisement.status !== "approved") {
+        return res.status(400).json({
+          success: false,
+          message: "Only approved promotions can be activated.",
+        });
+      }
+
+      // 4. Ensure payment is completed
+      if (advertisement.payment_status !== "paid") {
+        return res.status(400).json({
+          success: false,
+          message: "Payment has not been completed.",
+        });
+      }
+
+      // 5. Ensure the approved amount is valid
+      if (
+        !Number.isFinite(Number(advertisement.approved_amount)) ||
+        Number(advertisement.approved_amount) <= 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "The approved promotion amount is invalid.",
+        });
+      }
+
+      // 6. Validate campaign dates
+      const now = new Date();
+      const startDate = new Date(advertisement.start_date);
+      const endDate = new Date(advertisement.end_date);
+
+      if (
+        !advertisement.start_date ||
+        !advertisement.end_date ||
+        Number.isNaN(startDate.getTime()) ||
+        Number.isNaN(endDate.getTime())
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Campaign start date or end date is invalid.",
+        });
+      }
+
+      if (endDate < startDate) {
+        return res.status(400).json({
+          success: false,
+          message: "Campaign end date cannot precede the start date.",
+        });
+      }
+
+      if (now < startDate) {
+        return res.status(400).json({
+          success: false,
+          message: "The campaign has not started yet.",
+          campaign_start_date: startDate,
+        });
+      }
+
+      if (now > endDate) {
+        return res.status(400).json({
+          success: false,
+          message: "The campaign has already ended.",
+          campaign_end_date: endDate,
+        });
+      }
+
+      // 7. Prevent unnecessary repeated activation
+      if (advertisement.is_active === true) {
+        return res.status(200).json({
+          success: true,
+          message: "Promotion is already active.",
+          advertisement_id: String(advertisement._id),
+          is_active: true,
+        });
+      }
+
+      // 8. Activate the promotion
+      advertisement.is_active = true;
+
+      await advertisement.save();
+
+      // 9. Send response
+      return res.status(200).json({
+        success: true,
+        message: "Promotion activated successfully.",
+        advertisement: {
+          id: String(advertisement._id),
+          title: advertisement.title,
+          brand_name: advertisement.brand_name,
+          status: advertisement.status,
+          payment_status: advertisement.payment_status,
+          is_active: advertisement.is_active,
+          start_date: advertisement.start_date,
+          end_date: advertisement.end_date,
+        },
+      });
+    } catch (error) {
+      console.error("Activate promotion error:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to activate promotion.",
+      });
+    }
+  }
+);
 
 /* ============================================
    REJECT PROMOTION
@@ -4131,6 +5197,199 @@ app.patch(
     }
   }
 );
+// ============================================
+// API 6: DEACTIVATE EXPIRED PROMOTIONS
+// ============================================
+
+const deactivateExpiredPromotions = async () => {
+  try {
+    const now = new Date();
+
+    const result = await Advertisement.updateMany(
+      {
+        is_active: true,
+        end_date: { $lt: now },
+      },
+      {
+        $set: {
+          is_active: false,
+        },
+      }
+    );
+
+    if (result.modifiedCount > 0) {
+      console.log(
+        `Deactivated ${result.modifiedCount} expired promotion(s).`
+      );
+    }
+
+    return result.modifiedCount || 0;
+  } catch (error) {
+    console.error(
+      "Failed to deactivate expired promotions:",
+      error.message
+    );
+
+    throw error;
+  }
+};
+// ============================================
+// MANUAL ADMIN API: DEACTIVATE EXPIRED PROMOTIONS
+// ============================================
+
+app.patch(
+  "/admin/advertisements/deactivate-expired",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const deactivatedCount = await deactivateExpiredPromotions();
+
+      return res.status(200).json({
+        success: true,
+        message: "Expired promotions checked successfully.",
+        deactivated_count: deactivatedCount,
+      });
+    } catch (error) {
+      console.error("Admin expiration cleanup failed:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to deactivate expired promotions.",
+      });
+    }
+  }
+);
+// ============================================
+// AUTOMATIC PROMOTION EXPIRATION SCHEDULER
+// Runs every 5 minutes
+// ============================================
+
+cron.schedule("*/5 * * * *", async () => {
+  try {
+    await deactivateExpiredPromotions();
+  } catch (error) {
+    console.error(
+      "Scheduled promotion cleanup failed:",
+      error.message
+    );
+  }
+});
+// ============================================
+// API 7: GET PUBLIC ACTIVE PROMOTIONS
+// ============================================
+
+app.get("/advertisements/active", async (req, res) => {
+  try {
+    const now = new Date();
+
+    const advertisements = await Advertisement.find({
+      status: "approved",
+      payment_status: "paid",
+      is_active: true,
+
+      start_date: { $lte: now },
+      end_date: { $gte: now },
+    })
+      .select(
+        [
+          "title",
+          "brand_name",
+          "description",
+          "image_url",
+          "video_url",
+          "collaboration_type",
+          "start_date",
+          "end_date",
+          "status",
+          "is_active",
+        ].join(" ")
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      count: advertisements.length,
+      advertisements,
+    });
+  } catch (error) {
+    console.error("Fetch public promotions error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch active promotions.",
+    });
+  }
+});
+// ============================================
+// API 8: GET SINGLE ACTIVE PROMOTION BY ID
+// ============================================
+
+app.get("/advertisements/active/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 1. Validate the MongoDB ID
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid advertisement ID.",
+      });
+    }
+
+    // 2. Get the current time
+    const now = new Date();
+
+    // 3. Fetch only a publicly eligible promotion
+    const advertisement = await Advertisement.findOne({
+      _id: id,
+      status: "approved",
+      payment_status: "paid",
+      is_active: true,
+      start_date: { $lte: now },
+      end_date: { $gte: now },
+    })
+      .select(
+        [
+          "title",
+          "brand_name",
+          "description",
+          "image_url",
+          "video_url",
+          "collaboration_type",
+          "start_date",
+          "end_date",
+          "status",
+          "is_active",
+        ].join(" ")
+      )
+      .lean();
+
+    // 4. Return 404 if the promotion isn't publicly available
+    if (!advertisement) {
+      return res.status(404).json({
+        success: false,
+        message: "Promotion not found or is not currently available.",
+      });
+    }
+
+    // 5. Return the promotion details
+    return res.status(200).json({
+      success: true,
+      advertisement,
+    });
+  } catch (error) {
+    console.error(
+      "Fetch promotion details error:",
+      error.message
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch promotion details.",
+    });
+  }
+});
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

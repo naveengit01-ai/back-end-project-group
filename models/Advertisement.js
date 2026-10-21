@@ -120,23 +120,30 @@ const advertisementSchema = new mongoose.Schema(
       required: true,
       validate: {
         validator: function (value) {
-          return (
-            !this.start_date ||
-            value > this.start_date
-          );
+          return !this.start_date || value > this.start_date;
         },
         message: "End date must be after the start date.",
       },
     },
 
     // ========================================
-    // 5. COLLABORATION & PAYMENT
+    // 5. PROMOTION AMOUNT & PAYMENT
     // ========================================
 
+    // Existing field retained for compatibility.
+    // Its exact meaning depends on the existing application logic.
     amount_paid: {
       type: Number,
       required: true,
       min: 0,
+    },
+
+    // Amount approved by the GM and used by the backend
+    // when creating the Razorpay payment link.
+    approved_amount: {
+      type: Number,
+      min: 1,
+      default: null,
     },
 
     currency: {
@@ -156,10 +163,37 @@ const advertisementSchema = new mongoose.Schema(
       default: "pending",
     },
 
+    // Razorpay Payment Link ID.
+    payment_link_id: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    // Secure hosted payment-page URL returned by Razorpay.
+    payment_link_url: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    // When the payment-link email was successfully sent.
+    payment_link_sent_at: {
+      type: Date,
+      default: null,
+    },
+
+    // Actual successful Razorpay payment ID/reference.
     payment_reference: {
       type: String,
       default: "",
       trim: true,
+    },
+
+    // When successful payment was confirmed by the backend.
+    payment_paid_at: {
+      type: Date,
+      default: null,
     },
 
     collaboration_type: {
@@ -208,6 +242,8 @@ const advertisementSchema = new mongoose.Schema(
     // 7. ADVERTISEMENT CONTROL
     // ========================================
 
+    // Approval alone must not activate a promotion.
+    // The backend must enforce payment and campaign rules.
     is_active: {
       type: Boolean,
       default: false,
@@ -219,7 +255,7 @@ const advertisementSchema = new mongoose.Schema(
 );
 
 // ========================================
-// INDEXES
+// 8. DATABASE INDEXES
 // ========================================
 
 advertisementSchema.index({
@@ -232,6 +268,18 @@ advertisementSchema.index({
 advertisementSchema.index({
   brand_name: 1,
 });
+
+advertisementSchema.index({
+  payment_link_id: 1,
+});
+
+advertisementSchema.index({
+  payment_status: 1,
+});
+
+// ========================================
+// 9. EXPORT MODEL
+// ========================================
 
 module.exports = mongoose.model(
   "Advertisement",
