@@ -16,7 +16,6 @@ const Donation = require("./models/Donation");
 const Advertisement = require("./models/Advertisement");
 const BecomeRider = require("./models/BecomeRider");
 const Admin = require("./models/Admin");
-const Advertisement = require("./models/Advertisement");
 const aiRoutes = require("./routes/ai");
 const app = express();
 
