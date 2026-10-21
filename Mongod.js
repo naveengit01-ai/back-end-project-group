@@ -3788,9 +3788,10 @@ app.patch(
 );
 // PATCH /admin/advertisements/:id/approve
 
+// APPROVE PROMOTION
 app.patch(
   "/admin/advertisements/:id/approve",
-  YOUR_EXISTING_ADMIN_AUTH_MIDDLEWARE,
+  YOUR_ADMIN_MIDDLEWARE,
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -3807,7 +3808,7 @@ app.patch(
       if (advertisement.status === "completed") {
         return res.status(400).json({
           success: false,
-          message: "Completed promotions cannot be approved again.",
+          message: "Completed promotions cannot be approved.",
         });
       }
 
@@ -3815,12 +3816,8 @@ app.patch(
       advertisement.rejection_reason = "";
       advertisement.reviewed_at = new Date();
 
-      // Do not activate automatically.
-      // Activation also requires verified payment.
+      // Approval does not automatically activate a campaign.
       advertisement.is_active = false;
-
-      // Set reviewed_by here using the authenticated admin's
-      // actual database ID, according to your authentication setup.
 
       await advertisement.save();
 
@@ -3838,12 +3835,10 @@ app.patch(
       });
     }
   }
-);
-// PATCH /admin/advertisements/:id/reject
-
+);// REJECT PROMOTION
 app.patch(
   "/admin/advertisements/:id/reject",
-  YOUR_EXISTING_ADMIN_AUTH_MIDDLEWARE,
+  YOUR_ADMIN_MIDDLEWARE,
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -3851,11 +3846,11 @@ app.patch(
 
       if (
         typeof rejection_reason !== "string" ||
-        !rejection_reason.trim()
+        rejection_reason.trim().length < 5
       ) {
         return res.status(400).json({
           success: false,
-          message: "Please provide a rejection reason.",
+          message: "Please provide a rejection reason of at least 5 characters.",
         });
       }
 
@@ -3879,9 +3874,6 @@ app.patch(
       advertisement.rejection_reason = rejection_reason.trim();
       advertisement.reviewed_at = new Date();
       advertisement.is_active = false;
-
-      // Set reviewed_by here using your authenticated admin's
-      // actual database ID.
 
       await advertisement.save();
 
