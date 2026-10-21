@@ -160,6 +160,90 @@ const requireGMForReports = async (req, res, next) => {
     });
   }
 };
+/* ============================================
+   GENERAL ADMIN AUTHENTICATION
+   Used by admin advertisement management APIs
+============================================ */
+
+const requireAdmin = async (req, res, next) => {
+  try {
+    const authorization = req.headers.authorization;
+
+    if (!authorization || !authorization.startsWith("Bearer ")) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Please log in as an administrator.",
+      });
+    }
+
+    const token = authorization.slice(7).trim();
+
+    if (!token) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Authentication token is missing.",
+      });
+    }
+
+    // Verify the JWT using the same secret as admin login.
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Your /admin/login API creates tokens with admin: true.
+    if (!decoded.id || decoded.admin !== true) {
+      return res.status(403).json({
+        status: "forbidden",
+        message: "Administrator access is required.",
+      });
+    }
+
+    // Verify that the admin still exists in MongoDB.
+    const admin = await Admin.findById(decoded.id)
+      .select("-password -otp -otp_expiry")
+      .lean();
+
+    if (!admin) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Administrator account not found.",
+      });
+    }
+
+    if (!admin.is_active) {
+      return res.status(403).json({
+        status: "forbidden",
+        message: "Your administrator account is inactive.",
+      });
+    }
+
+    // Store authenticated administrator information.
+    req.admin = {
+      id: String(admin._id),
+      username: admin.username,
+      roles: Array.isArray(admin.roles) ? admin.roles : [],
+      user_type: admin.user_type,
+    };
+
+    return next();
+  } catch (error) {
+    if (
+      error.name === "TokenExpiredError" ||
+      error.name === "JsonWebTokenError" ||
+      error.name === "NotBeforeError"
+    ) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Your session is invalid or has expired.",
+      });
+    }
+
+    console.error("Admin authentication error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to verify administrator access.",
+    });
+  }
+};
 /* ================= UTIL ================= */
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
