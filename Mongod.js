@@ -4092,10 +4092,7 @@ app.post(
       // 5. Validate approved amount.
       const amount = Number(advertisement.approved_amount);
 
-      if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-      ) {
+      if (!Number.isFinite(amount) || amount <= 0) {
         return res.status(400).json({
           status: "error",
           message:
@@ -4103,7 +4100,7 @@ app.post(
         });
       }
 
-      // 6. This integration initially supports INR only.
+      // 6. This workflow supports INR only.
       if (advertisement.currency !== "INR") {
         return res.status(400).json({
           status: "error",
@@ -4137,7 +4134,7 @@ app.post(
         });
       }
 
-      // 9. Don't create duplicate links on repeated requests.
+      // 9. Prevent duplicate links.
       if (
         advertisement.payment_link_id &&
         advertisement.payment_link_url &&
@@ -4154,9 +4151,7 @@ app.post(
         });
       }
 
-      // 10. Create the Razorpay Payment Link.
-      // Razorpay expects the amount in the smallest currency unit.
-      // For INR, 5000 rupees = 500000 paise.
+      // 10. Convert INR to paise.
       const amountInPaise = Math.round(amount * 100);
 
       if (
@@ -4169,42 +4164,62 @@ app.post(
         });
       }
 
+      // 11. Create Razorpay Payment Link.
       const paymentLink = await razorpay.paymentLink.create({
         amount: amountInPaise,
         currency: "INR",
 
         accept_partial: false,
 
-        description:
-          `DWJD promotion payment - ${
-            advertisement.brand_name || advertisement.title
-          }`,
+        description: `DWJD promotion payment - ${
+          advertisement.brand_name ||
+          advertisement.title ||
+          "Promotion"
+        }`,
 
         customer: {
           name:
             advertisement.contact_person ||
             advertisement.brand_name ||
             "Promotion Owner",
+
           email,
-          contact:
-            advertisement.contact_phone
-              ? String(advertisement.contact_phone)
-              : undefined,
+
+          ...(advertisement.contact_phone
+            ? {
+                contact: String(
+                  advertisement.contact_phone
+                ),
+              }
+            : {}),
         },
 
         reference_id: `ad_${advertisement._id}`,
 
         notes: {
           advertisement_id: String(advertisement._id),
+
           brand_name: String(
             advertisement.brand_name || ""
           ).slice(0, 256),
         },
 
         reminder_enable: true,
+
+        // Request the standard payment methods.
+        options: {
+          checkout: {
+            method: {
+              card: 1,
+              upi: 1,
+              netbanking: 1,
+              wallet: 1,
+            },
+          },
+        },
       });
 
-      // 11. Save payment details before sending email.
+      // 12. Save payment details in MongoDB.
       advertisement.payment_link_id = paymentLink.id;
       advertisement.payment_link_url =
         paymentLink.short_url;
@@ -4214,7 +4229,7 @@ app.post(
 
       await advertisement.save();
 
-      // 12. Escape dynamic values used in the HTML email.
+      // 13. Escape dynamic values used in the email.
       const escapeHtml = (value) =>
         String(value ?? "").replace(
           /[&<>"']/g,
@@ -4230,81 +4245,84 @@ app.post(
 
       const brandName = escapeHtml(
         advertisement.brand_name ||
-        advertisement.title ||
-        "your promotion"
+          advertisement.title ||
+          "your promotion"
       );
 
       const ownerName = escapeHtml(
         advertisement.contact_person ||
-        "Promotion Owner"
+          "Promotion Owner"
       );
 
       const paymentUrl = escapeHtml(
         paymentLink.short_url
       );
 
-      // 13. Send payment link using your existing Brevo helper.
+      // 14. Send payment link using the existing Brevo helper.
       try {
         await sendEmail({
           to: email,
           subject: "DWJD promotion — payment required",
 
           html: `
-            <div style="
-              font-family: Arial, sans-serif;
-              max-width: 600px;
-              margin: auto;
-              padding: 24px;
-              color: #222;
-            ">
-              <h2>DWJD — Promotion Payment</h2>
+            <!DOCTYPE html>
+            <html>
+              <body style="
+                font-family: Arial, sans-serif;
+                max-width: 600px;
+                margin: auto;
+                padding: 24px;
+                color: #222;
+              ">
+                <h2>DWJD — Promotion Payment</h2>
 
-              <p>Hello ${ownerName},</p>
+                <p>Hello ${ownerName},</p>
 
-              <p>
-                Your promotion for
-                <strong>${brandName}</strong>
-                has been approved.
-              </p>
+                <p>
+                  Your promotion for
+                  <strong>${brandName}</strong>
+                  has been approved.
+                </p>
 
-              <p>
-                <strong>Approved amount:</strong>
-                ₹${amount.toFixed(2)}
-              </p>
+                <p>
+                  <strong>Approved amount:</strong>
+                  ₹${amount.toFixed(2)}
+                </p>
 
-              <p>
-                Please use the secure Razorpay payment link below
-                to complete your payment.
-              </p>
+                <p>
+                  Please use the secure Razorpay payment link below
+                  to complete your payment.
+                </p>
 
-              <p style="margin: 28px 0;">
-                <a
-                  href="${paymentUrl}"
-                  style="
-                    background: #146c43;
-                    color: #fff;
-                    padding: 14px 24px;
-                    border-radius: 6px;
-                    text-decoration: none;
-                    display: inline-block;
-                    font-weight: bold;
-                  "
-                >
-                  Pay Now
-                </a>
-              </p>
+                <p style="margin: 28px 0;">
+                  <a
+                    href="${paymentUrl}"
+                    style="
+                      background: #146c43;
+                      color: #fff;
+                      padding: 14px 24px;
+                      border-radius: 6px;
+                      text-decoration: none;
+                      display: inline-block;
+                      font-weight: bold;
+                    "
+                  >
+                    Pay Now
+                  </a>
+                </p>
 
-              <p>
-                Your promotion will not become active until
-                the payment is verified and the campaign is
-                eligible for activation.
-              </p>
+                <p>
+                  Your promotion will not become active until
+                  the payment is verified and the campaign is
+                  eligible for activation.
+                </p>
 
-              <p>
-                Thank you,<br />
-                DWJD Team
-              </p>
-            </div>
+                <p>
+                  Thank you,<br />
+                  DWJD Team
+                </p>
+              </body>
+            </html>
           `,
         });
       } catch (emailError) {
@@ -4313,13 +4331,12 @@ app.post(
           emailError.message
         );
 
-        // The Razorpay link was already created and saved.
-        // Return it so the administrator can retry delivery
-        // using a dedicated email-retry API later.
+        // Payment link already exists and is saved.
+        // Do not create another link just to retry the email.
         return res.status(502).json({
           status: "partial_success",
           message:
-            "Payment link was created and saved, but the email could not be sent. Do not generate another link; retry email delivery using the existing link.",
+            "Payment link was created and saved, but the email could not be sent. Use the existing link when retrying email delivery.",
           payment_link_id: paymentLink.id,
           payment_link_url: paymentLink.short_url,
           email_sent: false,
@@ -4327,7 +4344,7 @@ app.post(
         });
       }
 
-      // 14. Success response.
+      // 15. Return success response.
       return res.status(201).json({
         status: "success",
         message:
