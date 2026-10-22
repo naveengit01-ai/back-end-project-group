@@ -5391,6 +5391,220 @@ app.get("/advertisements/active/:id", async (req, res) => {
     });
   }
 });
+/*
+DWJD PROMOTION-SPECIFIC RAZORPAY QR ROUTE
+Paste this into Mongod.js AFTER:
+  const razorpay = new Razorpay({ key_id: ..., key_secret: ... });
+
+It relies on the existing requireAdmin middleware, Advertisement model,
+mongoose, and razorpay instance. Do not create another webhook route.
+*/
+
+app.post("/admin/advertisements/:id/qr-code", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ status: "error", message: "Invalid promotion ID." });
+    }
+
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      return res.status(503).json({ status: "error", message: "Razorpay API credentials are not configured." });
+    }
+
+    const ad = await Advertisement.findById(id);
+    if (!ad) {
+      return res.status(404).json({ status: "error", message: "Promotion not found." });
+    }
+
+    if (ad.status !== "approved") {
+      return res.status(409).json({ status: "error", message: "Only GM-approved promotions can receive a QR code." });
+    }
+
+    if (ad.payment_status === "paid") {
+      return res.status(409).json({ status: "error", message: "This promotion is already paid." });
+    }
+
+    const amount = Number(ad.approved_amount);
+    if (!Number.isFinite(amount) || amount <= 0 || ad.currency !== "INR") {
+      return res.status(400).json({ status: "error", message: "A valid GM-approved INR amount is required." });
+    }
+
+    const amountInPaise = Math.round(amount * 100);
+    if (!Number.isSafeInteger(amountInPaise) || amountInPaise < 100) {
+      return res.status(400).json({ status: "error", message: "QR payments must be at least ₹1.00 and use a valid amount." });
+    }
+
+    // Prevent a second active payment route for the same campaign.
+    // Close/invalidate an old payment link in Razorpay before creating a QR.
+    if (ad.payment_link_id && ad.payment_link_url) {
+      return res.status(409).json({
+        status: "error",
+        message: "A payment link already exists for this promotion. Close/invalidate it in Razorpay before creating a QR to avoid duplicate payment routes.",
+        payment_link_url: ad.payment_link_url,
+      });
+    }
+
+    // Return existing QR instead of creating duplicates on repeat clicks.
+    if (ad.qr_code_id && ad.qr_code_image_url && ["created", "active"].includes(ad.qr_code_status)) {
+      return res.status(200).json({
+        status: "success",
+        message: "A QR code already exists for this promotion.",
+        qr_code: {
+          id: ad.qr_code_id,
+          image_url: ad.qr_code_image_url,
+          status: ad.qr_code_status,
+          amount: ad.approved_amount,
+          currency: ad.currency,
+        },
+      });
+    }
+
+    const name = `DWJD ${ad.brand_name || ad.title}`.replace(/\s+/g, " ").slice(0, 40);
+    const qr = await razorpay.qrCode.create({
+      type: "upi_qr",
+      name,
+      usage: "single_use",
+      fixed_amount: true,
+      payment_amount: amountInPaise,
+      description: `DWJD promotion - ${String(ad.brand_name || ad.title).slice(0, 100)}`,
+      notes: {
+        advertisement_id: String(ad._id),
+        brand_name: String(ad.brand_name || "").slice(0, 100),
+      },
+    });
+
+    if (!qr?.id || !qr?.image_url) {
+      console.error("Razorpay QR response missing ID or image URL:", qr);
+      return res.status(502).json({ status: "error", message: "Razorpay did not return a usable QR code." });
+    }
+
+    ad.qr_code_id = qr.id;
+    ad.qr_code_image_url = qr.image_url;
+    ad.qr_code_status = qr.status === "active" ? "active" : "created";
+    ad.qr_code_created_at = qr.created_at ? new Date(qr.created_at * 1000) : new Date();
+    await ad.save();
+
+    return res.status(201).json({
+      status: "success",
+      message: "Promotion-specific QR code created.",
+      qr_code: {
+        id: ad.qr_code_id,
+        image_url: ad.qr_code_image_url,
+        status: ad.qr_code_status,
+        amount: ad.approved_amount,
+        currency: ad.currency,
+        promotion_id: String(ad._id),
+        brand_name: ad.brand_name,
+      },
+    });
+  } catch (error) {
+    console.error("Create promotion QR error:", error.response?.data || error.message);
+    return res.status(500).json({
+      status: "error",
+      message: error.response?.data?.error?.description || "Failed to create promotion QR code.",
+    });
+  }
+});
+
+/*
+WEBHOOK PATCH:
+Inside the FIRST existing app.post("/webhooks/razorpay", ...) handler,
+after its HMAC signature has been verified and after `const event = req.body?.event;`,
+insert this branch BEFORE the current:
+  if (event !== "payment_link.paid") { ... }
+
+Do not add a second app.post("/webhooks/razorpay") route.
+*/
+async function processPromotionQrCreditedWebhook(req, res) {
+  const qr = req.body?.payload?.qr_code?.entity;
+  const payment = req.body?.payload?.payment?.entity;
+
+  if (!qr?.id || !payment?.id) {
+    return res.status(400).json({ success: false, message: "QR code or payment details are missing." });
+  }
+
+  const ad = await Advertisement.findOne({ qr_code_id: qr.id });
+  if (!ad) {
+    // Acknowledge unmatched events to avoid endless retries; investigate server logs.
+    console.error("QR webhook has no matching promotion:", { qrCodeId: qr.id, paymentId: payment.id });
+    return res.status(200).json({ success: true, message: "No matching promotion found; event logged." });
+  }
+
+  const expectedAmountPaise = Math.round(Number(ad.approved_amount) * 100);
+  const validAmount = Number.isSafeInteger(expectedAmountPaise) &&
+    Number(payment.amount) === expectedAmountPaise;
+  const validCurrency = ad.currency === "INR" && payment.currency === "INR";
+  const validStatus = payment.status === "captured" && payment.captured === true;
+
+  if (!validAmount || !validCurrency || !validStatus) {
+    console.error("QR payment validation failed:", {
+      advertisementId: String(ad._id),
+      qrCodeId: qr.id,
+      paymentId: payment.id,
+      validAmount,
+      validCurrency,
+      validStatus,
+    });
+    return res.status(400).json({ success: false, message: "QR payment validation failed." });
+  }
+
+  if (ad.status !== "approved" || !Number.isFinite(Number(ad.approved_amount)) || Number(ad.approved_amount) <= 0) {
+    return res.status(400).json({ success: false, message: "Promotion is not eligible for payment confirmation." });
+  }
+
+  // Idempotency: Razorpay may retry webhook delivery.
+  if (ad.payment_status === "paid") {
+    if (ad.payment_reference === payment.id || ad.qr_payment_reference === payment.id) {
+      return res.status(200).json({ success: true, message: "QR payment was already recorded." });
+    }
+    console.error("Another payment arrived for an already-paid promotion:", {
+      advertisementId: String(ad._id),
+      existingPaymentId: ad.payment_reference,
+      incomingPaymentId: payment.id,
+    });
+    return res.status(409).json({ success: false, message: "Promotion is already marked as paid." });
+  }
+
+  // Avoid overwriting a different successful payment from the payment-link workflow.
+  if (ad.payment_reference && ad.payment_reference !== payment.id) {
+    return res.status(409).json({ success: false, message: "A different payment reference is already recorded." });
+  }
+
+  ad.payment_status = "paid";
+  ad.payment_reference = payment.id;
+  ad.qr_payment_reference = payment.id;
+  ad.payment_paid_at = payment.created_at ? new Date(payment.created_at * 1000) : new Date();
+  ad.qr_payment_paid_at = ad.payment_paid_at;
+  ad.qr_code_status = qr.status === "closed" ? "closed" : (ad.qr_code_status || "active");
+  // Payment confirmation must not auto-activate a campaign.
+  ad.is_active = false;
+
+  await ad.save();
+
+  console.log("Promotion QR payment verified:", {
+    advertisementId: String(ad._id),
+    qrCodeId: qr.id,
+    paymentId: payment.id,
+    amount: ad.approved_amount,
+  });
+
+  return res.status(200).json({
+    success: true,
+    message: "QR payment verified and recorded.",
+    advertisement_id: String(ad._id),
+    payment_status: ad.payment_status,
+  });
+}
+
+/*
+Insert inside the existing webhook handler after signature verification:
+if (event === "qr_code.credited") {
+  return await processPromotionQrCreditedWebhook(req, res);
+}
+Then leave the existing payment_link.paid processing intact.
+*/
+
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
