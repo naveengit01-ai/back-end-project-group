@@ -4426,17 +4426,21 @@ app.post("/webhooks/razorpay", async (req, res) => {
       });
     }
 
-    // 6. Read the verified event
-    const event = req.body?.event;
+  // 6. Read the verified Razorpay event.
+const event = req.body?.event;
 
-    // We process payment_link.paid only.
-    // Other valid Razorpay events can safely be acknowledged.
-    if (event !== "payment_link.paid") {
-      return res.status(200).json({
-        success: true,
-        message: "Webhook received; event ignored.",
-      });
-    }
+// Process QR payments using the existing QR handler.
+if (event === "qr_code.credited") {
+  return await processPromotionQrCreditedWebhook(req, res);
+}
+
+// Keep the existing payment-link workflow.
+if (event !== "payment_link.paid") {
+  return res.status(200).json({
+    success: true,
+    message: "Webhook received; event ignored.",
+  });
+}
 
     // 7. Extract the payment-link and payment details
     const paymentLink =
@@ -4607,222 +4611,6 @@ app.post("/webhooks/razorpay", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Webhook processing failed.",
-    });
-  }
-});
-// ============================================
-// API 4: RAZORPAY PAYMENT WEBHOOK
-// ============================================
-
-app.post("/webhooks/razorpay", async (req, res) => {
-  try {
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
-
-    if (!webhookSecret) {
-      console.error("RAZORPAY_WEBHOOK_SECRET is missing");
-
-      return res.status(500).json({
-        success: false,
-        message: "Webhook configuration error",
-      });
-    }
-
-    // Verify the original request body exists
-    if (!Buffer.isBuffer(req.rawBody)) {
-      return res.status(400).json({
-        success: false,
-        message: "Raw request body is missing",
-      });
-    }
-
-    // Read Razorpay signature
-    const signature = req.headers["x-razorpay-signature"];
-
-    if (
-      typeof signature !== "string" ||
-      !/^[a-f0-9]{64}$/i.test(signature)
-    ) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid webhook signature",
-      });
-    }
-
-    // Generate expected signature
-    const expectedSignature = crypto
-      .createHmac("sha256", webhookSecret)
-      .update(req.rawBody)
-      .digest();
-
-    const receivedSignature = Buffer.from(signature, "hex");
-
-    // Compare signatures safely
-    if (
-      expectedSignature.length !== receivedSignature.length ||
-      !crypto.timingSafeEqual(
-        expectedSignature,
-        receivedSignature
-      )
-    ) {
-      return res.status(401).json({
-        success: false,
-        message: "Webhook signature verification failed",
-      });
-    }
-
-    // Only process payment_link.paid
-    const event = req.body?.event;
-
-    if (event !== "payment_link.paid") {
-      return res.status(200).json({
-        success: true,
-        message: "Event acknowledged",
-      });
-    }
-
-    // Extract Razorpay entities
-    const paymentLink =
-      req.body?.payload?.payment_link?.entity;
-
-    const payment =
-      req.body?.payload?.payment?.entity;
-
-    if (!paymentLink || !payment) {
-      return res.status(400).json({
-        success: false,
-        message: "Payment information is missing",
-      });
-    }
-
-    if (!paymentLink.id || !payment.id) {
-      return res.status(400).json({
-        success: false,
-        message: "Payment identifiers are missing",
-      });
-    }
-
-    // Find the promotion associated with this payment link
-    const advertisement = await Advertisement.findOne({
-      payment_link_id: paymentLink.id,
-    });
-
-    if (!advertisement) {
-      console.error(
-        "No promotion found for payment link:",
-        paymentLink.id
-      );
-
-      return res.status(200).json({
-        success: true,
-        message: "No matching promotion found",
-      });
-    }
-
-    // Validate the payment-link reference
-    const expectedReference = `ad_${advertisement._id}`;
-
-    if (paymentLink.reference_id !== expectedReference) {
-      return res.status(400).json({
-        success: false,
-        message: "Payment reference mismatch",
-      });
-    }
-
-    // Validate the expected amount
-    const expectedAmount = Math.round(
-      Number(advertisement.approved_amount) * 100
-    );
-
-    const validAmount =
-      Number.isSafeInteger(expectedAmount) &&
-      Number(paymentLink.amount) === expectedAmount &&
-      Number(payment.amount) === expectedAmount;
-
-    // Validate currency and statuses
-    const validCurrency =
-      advertisement.currency === "INR" &&
-      paymentLink.currency === "INR" &&
-      payment.currency === "INR";
-
-    const validPayment =
-      payment.status === "captured" &&
-      paymentLink.status === "paid";
-
-    if (!validAmount || !validCurrency || !validPayment) {
-      console.error("Razorpay payment validation failed", {
-        paymentLinkId: paymentLink.id,
-        paymentId: payment.id,
-        validAmount,
-        validCurrency,
-        validPayment,
-      });
-
-      return res.status(400).json({
-        success: false,
-        message: "Payment validation failed",
-      });
-    }
-
-    // Ensure the promotion was approved
-    if (
-      advertisement.status !== "approved" ||
-      Number(advertisement.approved_amount) <= 0
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Promotion is not eligible for payment confirmation",
-      });
-    }
-
-    // Idempotency: accept a duplicate delivery of the same payment
-    if (advertisement.payment_status === "paid") {
-      if (advertisement.payment_reference === payment.id) {
-        return res.status(200).json({
-          success: true,
-          message: "Payment already recorded",
-        });
-      }
-
-      return res.status(409).json({
-        success: false,
-        message: "Promotion is already marked as paid",
-      });
-    }
-
-    // Record verified payment
-    advertisement.payment_status = "paid";
-    advertisement.payment_reference = payment.id;
-
-    advertisement.payment_paid_at = payment.created_at
-      ? new Date(payment.created_at * 1000)
-      : new Date();
-
-    // Payment alone must not activate the promotion
-    advertisement.is_active = false;
-
-    await advertisement.save();
-
-    console.log("Promotion payment verified:", {
-      advertisementId: String(advertisement._id),
-      paymentLinkId: paymentLink.id,
-      paymentId: payment.id,
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Payment verified successfully",
-      advertisement_id: String(advertisement._id),
-      payment_status: "paid",
-    });
-  } catch (error) {
-    console.error(
-      "Razorpay webhook error:",
-      error.response?.data || error.message
-    );
-
-    return res.status(500).json({
-      success: false,
-      message: "Webhook processing failed",
     });
   }
 });
