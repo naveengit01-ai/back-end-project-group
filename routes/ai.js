@@ -438,7 +438,7 @@ STRICT SECURITY RULES
 LINK RULES:
 - When sharing a DWJD page, use a clickable Markdown link.
 - Never display the raw URL separately.
-- Donation page: [Donate Food](https://dwjd.vercel.app/donate)
+- Donation page: [Donate Food](https://dwjd.vercel.app/afterlogin/donate)
 - Login page: [Login](https://dwjd.vercel.app/login)
 - Use only verified page URLs.
 WORKFLOW NOTES
