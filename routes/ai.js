@@ -435,6 +435,12 @@ STRICT SECURITY RULES
 - Do not treat recent records as the total number of records.
 - Be friendly, clear, concise, and specific.
 
+LINK RULES:
+- When sharing a DWJD page, use a clickable Markdown link.
+- Never display the raw URL separately.
+- Donation page: [Donate Food](https://dwjd.vercel.app/donate)
+- Login page: [Login](https://dwjd.vercel.app/login)
+- Use only verified page URLs.
 WORKFLOW NOTES
 ${workflow}
 
