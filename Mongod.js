@@ -21,14 +21,13 @@ const aiRoutes = require("./routes/ai");
 const app = express();
 const OAuthLoginCode = require("./models/OAuthLoginCode");
 const cookieParser = require("cookie-parser");
+/* ================= MIDDLEWARE ================= */
 
 const googleOAuthClient = new google.auth.OAuth2(
   process.env.GOOGLE_OAUTH_CLIENT_ID,
   process.env.GOOGLE_OAUTH_CLIENT_SECRET,
   process.env.GOOGLE_OAUTH_REDIRECT_URI
 );
-
-/* ================= MIDDLEWARE ================= */
 
 const allowedOrigins = [
   "https://dwjd.vercel.app",
@@ -52,6 +51,10 @@ app.use(
     credentials: true,
   })
 );
+
+// ADD THIS LINE
+app.use(cookieParser());
+
 app.use(
   express.json({
     limit: "8mb",
@@ -62,6 +65,7 @@ app.use(
     },
   })
 );
+
 app.use("/ai", aiRoutes);
 
 /* ================= DATABASE ================= */
@@ -619,11 +623,22 @@ app.post("/login", async (req, res) => {
     if (!user) {
       return res.json({ status: "invalid_credentials" });
     }
+    // Google-only accounts do not have a local password.
+if (!user.password) {
+  return res.json({
+    status: "invalid_credentials",
+    message: "This account uses Google login. Please continue with Google.",
+  });
+}
 
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.json({ status: "invalid_credentials" });
-    }
+const match = await bcrypt.compare(password, user.password);
+
+if (!match) {
+  return res.json({
+    status: "invalid_credentials",
+    message: "Invalid email or password.",
+  });
+}
 
     /* 🔴 NOT VERIFIED → OTP REQUIRED */
     if (!user.is_verified) {
@@ -644,6 +659,19 @@ app.post("/login", async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
+    const safeUser = {
+  _id: user._id,
+  username: user.username,
+  first_name: user.first_name,
+  last_name: user.last_name,
+  email: user.email,
+  phone: user.phone || "",
+  user_type: user.user_type,
+  auth_provider: user.auth_provider,
+  profile_image: user.profile_image || "",
+  is_verified: user.is_verified,
+  is_rider_approved: user.is_rider_approved,
+};
 
     res.json({
       status: "login_success",
@@ -6275,6 +6303,17 @@ app.post("/auth/google/exchange", async (req, res) => {
     });
   }
 });
+// ======================================================
+// PASSWORD RESET OTP HASH HELPER
+// ======================================================
+
+const hashResetOTP = (otp) => {
+  return crypto
+    .createHmac("sha256", process.env.JWT_SECRET)
+    .update(otp)
+    .digest("hex");
+};
+
 // ======================================================
 // API 4: FORGOT PASSWORD
 // POST /forgot-password
