@@ -1,23 +1,8 @@
-
 const mongoose = require("mongoose");
 
 const becomeRiderSchema = new mongoose.Schema(
   {
-    // ========================================
-    // EXISTING REGISTERED USER REFERENCE
-    // ========================================
-
-    user_id: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-      index: true,
-    },
-
-    // ========================================
-    // RIDER PERSONAL INFORMATION
-    // ========================================
-
+    // Rider's personal information
     first_name: {
       type: String,
       required: true,
@@ -30,6 +15,7 @@ const becomeRiderSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // Email submitted by the visitor
     email: {
       type: String,
       required: true,
@@ -38,30 +24,14 @@ const becomeRiderSchema = new mongoose.Schema(
       index: true,
     },
 
+    // Mobile number submitted after email eligibility check
     phone: {
       type: String,
       required: true,
       trim: true,
     },
 
-    profile_image: {
-      type: String,
-      default: "",
-    },
-
-    // ========================================
-    // EMAIL ELIGIBILITY CHECK
-    // ========================================
-
-    email_checked: {
-      type: Boolean,
-      default: false,
-    },
-
-    // ========================================
-    // APPLICATION STATUS
-    // ========================================
-
+    // Request processing status
     status: {
       type: String,
       enum: [
@@ -75,10 +45,18 @@ const becomeRiderSchema = new mongoose.Schema(
       required: true,
     },
 
-    // ========================================
-    // ADMIN REVIEW INFORMATION
-    // ========================================
+    // Email eligibility check
+    email_checked: {
+      type: Boolean,
+      default: false,
+    },
+    
+    profile_image: {
+      type: String,
+      default: ""
+    },
 
+    // Customer Support review information
     reviewed_by: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Admin",
@@ -96,71 +74,25 @@ const becomeRiderSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // ========================================
-    // RIDER ACCOUNT CONVERSION
-    // ========================================
-
+    // Reference to the rider account created from this request
     created_user_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       default: null,
     },
 
+    // Account creation timestamp
     account_created_at: {
       type: Date,
       default: null,
     },
-
-    // ========================================
-    // EMAIL NOTIFICATION TRACKING
-    // ========================================
-
-    notification_status: {
-      type: String,
-      enum: [
-        "not_sent",
-        "sent",
-        "failed",
-      ],
-      default: "not_sent",
-    },
-
-    notification_sent_at: {
-      type: Date,
-      default: null,
-    },
-
   },
   {
     timestamps: true,
   }
 );
 
-// ========================================
-// DATABASE INDEXES
-// ========================================
-
-// Find applications belonging to a registered user
-becomeRiderSchema.index({
-  user_id: 1,
-  createdAt: -1,
-});
-
-// Admin application listing
-becomeRiderSchema.index({
-  status: 1,
-  createdAt: -1,
-});
-
-// Email search
-becomeRiderSchema.index({
-  email: 1,
-});
-
-// ========================================
-// EXPORT MODEL
-// ========================================
-
+// Reuse the existing model if it has already been registered.
 const BecomeRider =
   mongoose.models.BecomeRider ||
   mongoose.model("BecomeRider", becomeRiderSchema);
