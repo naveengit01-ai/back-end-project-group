@@ -29,25 +29,56 @@ const googleOAuthClient = new google.auth.OAuth2(
   process.env.GOOGLE_OAUTH_REDIRECT_URI
 );
 
+
+/* ================= MIDDLEWARE ================= */
+
+// Permanent frontend domains
 const allowedOrigins = [
   "https://dwjd.vercel.app",
-  "http://localhost:5173",
   "https://dwjd-org.vercel.app",
+  "http://localhost:5173",
   "http://192.168.1.12:5173",
 ];
+
+// Allow preview deployments belonging to this Vercel project.
+// Restrict the pattern to this project's deployment naming format.
+const isAllowedVercelPreview = (origin) => {
+  return /^https:\/\/project-group-[a-z0-9-]+-kola-afdd1ad9\.vercel\.app$/.test(
+    origin
+  );
+};
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        isAllowedVercelPreview(origin)
+      ) {
         return callback(null, true);
       }
 
       console.error("Blocked CORS origin:", origin);
+
       return callback(new Error("Not allowed by CORS"));
     },
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
+
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "Accept",
+    ],
+
     credentials: true,
   })
 );
