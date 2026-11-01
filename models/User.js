@@ -1,7 +1,12 @@
+
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema(
   {
+    // ========================================
+    // BASIC USER INFORMATION
+    // ========================================
+
     username: {
       type: String,
       required: true,
@@ -23,10 +28,10 @@ const userSchema = new mongoose.Schema(
     },
 
     phone: {
-  type: String,
-  default: undefined,
-  sparse: true,
-},
+      type: String,
+      default: undefined,
+      trim: true,
+    },
 
     email: {
       type: String,
@@ -36,17 +41,25 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // ========================================
+    // USER ROLE
+    // ========================================
+
     user_type: {
       type: String,
       enum: ["user", "rider"],
       required: true,
     },
 
-    // Local or Google authentication
+    // ========================================
+    // AUTHENTICATION PROVIDER
+    // ========================================
+
     auth_provider: {
       type: String,
       enum: ["local", "google"],
       default: "local",
+      required: true,
     },
 
     google_id: {
@@ -62,17 +75,24 @@ const userSchema = new mongoose.Schema(
       },
     },
 
+    // ========================================
+    // PROFILE INFORMATION
+    // ========================================
+
     profile_image: {
       type: String,
       default: "",
     },
+
+    // ========================================
+    // EMAIL VERIFICATION
+    // ========================================
 
     is_verified: {
       type: Boolean,
       default: false,
     },
 
-    // Existing email verification OTP
     otp: {
       type: String,
       default: null,
@@ -83,7 +103,10 @@ const userSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Password reset fields
+    // ========================================
+    // FORGOT PASSWORD / RESET PASSWORD
+    // ========================================
+
     reset_password_otp_hash: {
       type: String,
       default: null,
@@ -97,9 +120,18 @@ const userSchema = new mongoose.Schema(
     reset_password_attempts: {
       type: Number,
       default: 0,
+      min: 0,
     },
 
-    // Preserve rider approval functionality
+    reset_password_last_sent_at: {
+      type: Date,
+      default: null,
+    },
+
+    // ========================================
+    // RIDER APPROVAL
+    // ========================================
+
     is_rider_approved: {
       type: Boolean,
       default: false,
@@ -110,8 +142,32 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// A Google ID must be unique when it exists.
-// Local users do not need a Google ID.
+// ========================================
+// DATABASE INDEXES
+// ========================================
+
+// Unique username
+userSchema.index(
+  { username: 1 },
+  { unique: true }
+);
+
+// Unique email
+userSchema.index(
+  { email: 1 },
+  { unique: true }
+);
+
+// Unique phone, but allow multiple missing values
+userSchema.index(
+  { phone: 1 },
+  {
+    unique: true,
+    sparse: true,
+  }
+);
+
+// Unique Google ID only when it is a string
 userSchema.index(
   { google_id: 1 },
   {
@@ -122,4 +178,10 @@ userSchema.index(
   }
 );
 
-module.exports = mongoose.model("User", userSchema);
+// ========================================
+// EXPORT MODEL
+// ========================================
+
+module.exports =
+  mongoose.models.User ||
+  mongoose.model("User", userSchema);
