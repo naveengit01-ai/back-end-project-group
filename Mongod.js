@@ -19,6 +19,14 @@ const BecomeRider = require("./models/BecomeRider");
 const Admin = require("./models/Admin");
 const aiRoutes = require("./routes/ai");
 const app = express();
+const OAuthLoginCode = require("./models/OAuthLoginCode");
+const cookieParser = require("cookie-parser");
+
+const googleOAuthClient = new google.auth.OAuth2(
+  process.env.GOOGLE_OAUTH_CLIENT_ID,
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+  process.env.GOOGLE_OAUTH_REDIRECT_URI
+);
 
 /* ================= MIDDLEWARE ================= */
 
@@ -5808,7 +5816,801 @@ const cleanupExpiredPromotionMedia = async () => {
 
   return result;
 };
+const OAUTH_STATE_SECRET = process.env.GOOGLE_OAUTH_STATE_SECRET;
 
+if (!OAUTH_STATE_SECRET) {
+  throw new Error("GOOGLE_OAUTH_STATE_SECRET is missing");
+}
+
+const createOAuthState = (userType) => {
+  const payload = {
+    user_type: userType,
+    nonce: crypto.randomBytes(32).toString("hex"),
+    created_at: Date.now(),
+  };
+
+  const encodedPayload = Buffer
+    .from(JSON.stringify(payload))
+    .toString("base64url");
+
+  const signature = crypto
+    .createHmac("sha256", OAUTH_STATE_SECRET)
+    .update(encodedPayload)
+    .digest("base64url");
+
+  return {
+    state: `${encodedPayload}.${signature}`,
+    nonce: payload.nonce,
+  };
+};
+
+const verifyOAuthState = (state) => {
+  try {
+    const [encodedPayload, receivedSignature] = state.split(".");
+
+    if (!encodedPayload || !receivedSignature) {
+      return null;
+    }
+
+    const expectedSignature = crypto
+      .createHmac("sha256", OAUTH_STATE_SECRET)
+      .update(encodedPayload)
+      .digest();
+
+    const actualSignature = Buffer.from(
+      receivedSignature,
+      "base64url"
+    );
+
+    if (
+      actualSignature.length !== expectedSignature.length ||
+      !crypto.timingSafeEqual(actualSignature, expectedSignature)
+    ) {
+      return null;
+    }
+
+    const payload = JSON.parse(
+      Buffer.from(encodedPayload, "base64url").toString()
+    );
+
+    if (
+      !["user", "rider"].includes(payload.user_type) ||
+      !payload.nonce ||
+      Date.now() - payload.created_at > 10 * 60 * 1000 ||
+      Date.now() < payload.created_at
+    ) {
+      return null;
+    }
+
+    return payload;
+  } catch (error) {
+    return null;
+  }
+};
+// Generate a unique username for Google signup
+const generateGoogleUsername = async (email) => {
+  const baseUsername = email
+    .split("@")[0]
+    .replace(/[^a-zA-Z0-9_]/g, "")
+    .slice(0, 15) || "googleuser";
+
+  let username;
+  let exists = true;
+
+  while (exists) {
+    const randomNumber = crypto.randomInt(100000, 999999);
+    username = `${baseUsername}_${randomNumber}`;
+
+    exists = await User.exists({ username });
+  }
+
+  return username;
+};
+
+// Hash the temporary login code
+const hashOAuthCode = (code) => {
+  return crypto
+    .createHash("sha256")
+    .update(code)
+    .digest("hex");
+};
+
+// ========================================
+// GOOGLE OAUTH - START LOGIN
+// GET /auth/google?user_type=user
+// GET /auth/google?user_type=rider
+// ========================================
+
+app.get("/auth/google", (req, res) => {
+  try {
+    const { user_type } = req.query;
+
+    // Validate requested account type
+    if (!["user", "rider"].includes(user_type)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid user type. Use user or rider.",
+      });
+    }
+
+    // Generate signed OAuth state
+    const { state, nonce } = createOAuthState(user_type);
+
+    // Store nonce in a secure browser cookie.
+    // The callback API will compare it with the signed state.
+    res.cookie("dwjd_oauth_state", nonce, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 10 * 60 * 1000,
+      path: "/",
+    });
+
+    // Generate Google authorization URL
+    const googleAuthUrl = googleOAuthClient.generateAuthUrl({
+      access_type: "online",
+      scope: [
+        "openid",
+        "email",
+        "profile",
+      ],
+      state,
+      prompt: "select_account",
+    });
+
+    // Redirect browser to Google
+    return res.redirect(googleAuthUrl);
+
+  } catch (error) {
+    console.error("Google OAuth start error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to start Google authentication.",
+    });
+  }
+});
+// ======================================================
+// API 2: GOOGLE OAUTH CALLBACK
+// GET /oauth2callback
+// ======================================================
+
+app.get("/oauth2callback", async (req, res) => {
+  try {
+    const { code, state, error } = req.query;
+
+    const frontendURL = process.env.FRONTEND_URL;
+
+    if (!frontendURL) {
+      throw new Error("FRONTEND_URL is not configured");
+    }
+
+    const redirectWithError = (errorCode) => {
+      res.clearCookie("dwjd_oauth_state", {
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        path: "/",
+      });
+
+      return res.redirect(
+        `${frontendURL}/login?google_error=${encodeURIComponent(errorCode)}`
+      );
+    };
+
+    // 1. Check whether Google returned an error
+    if (error) {
+      return redirectWithError("cancelled");
+    }
+
+    if (!code || !state || typeof code !== "string" ||
+        typeof state !== "string") {
+      return redirectWithError("authentication_failed");
+    }
+
+    // 2. Verify signed OAuth state
+    const statePayload = verifyOAuthState(state);
+
+    if (!statePayload) {
+      return redirectWithError("invalid_state");
+    }
+
+    // 3. Verify browser-bound nonce
+    const browserNonce = req.cookies?.dwjd_oauth_state;
+
+    if (
+      !browserNonce ||
+      browserNonce !== statePayload.nonce
+    ) {
+      return redirectWithError("invalid_state");
+    }
+
+    res.clearCookie("dwjd_oauth_state", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      path: "/",
+    });
+
+    const requestedUserType = statePayload.user_type;
+
+    // 4. Exchange authorization code with Google
+    const { tokens } = await googleOAuthClient.getToken(code);
+
+    if (!tokens.id_token) {
+      return redirectWithError("verification_failed");
+    }
+
+    // 5. Verify Google's ID token
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: process.env.GOOGLE_OAUTH_CLIENT_ID,
+    });
+
+    const googlePayload = ticket.getPayload();
+
+    if (
+      !googlePayload ||
+      !googlePayload.email ||
+      googlePayload.email_verified !== true ||
+      !googlePayload.sub
+    ) {
+      return redirectWithError("verification_failed");
+    }
+
+    const googleId = googlePayload.sub;
+    const email = googlePayload.email.toLowerCase().trim();
+
+    const firstName = googlePayload.given_name || "Google";
+    const lastName = googlePayload.family_name || "User";
+    const profileImage = googlePayload.picture || "";
+
+    // 6. Find account using Google ID first
+    let user = await User.findOne({
+      google_id: googleId,
+    });
+
+    if (user) {
+      // Existing Google-linked account must have the requested role
+      if (user.user_type !== requestedUserType) {
+        return redirectWithError("account_type_mismatch");
+      }
+
+      if (user.email.toLowerCase() !== email) {
+        return redirectWithError("account_conflict");
+      }
+    } else {
+      // 7. Check whether an account already exists with this email
+      user = await User.findOne({ email });
+
+      if (user) {
+        // Never silently change an existing account's role
+        if (user.user_type !== requestedUserType) {
+          return redirectWithError("account_type_mismatch");
+        }
+
+        // A Google ID already linked to another account is a conflict
+        if (user.google_id && user.google_id !== googleId) {
+          return redirectWithError("account_conflict");
+        }
+
+        // Link verified Google identity to existing account
+        user.google_id = googleId;
+
+        // Keep existing local password and auth_provider intact
+        if (!user.is_verified) {
+          user.is_verified = true;
+          user.otp = null;
+          user.otp_expiry = null;
+        }
+
+        await user.save();
+      } else {
+        // 8. Create a new DWJD account
+        const username = await generateGoogleUsername(email);
+
+        user = await User.create({
+          username,
+          first_name: firstName,
+          last_name: lastName,
+
+          // Google does not provide a phone number.
+          // Your User schema must allow this field to be optional.
+          email,
+          phone: undefined,
+
+          user_type: requestedUserType,
+          auth_provider: "google",
+          google_id: googleId,
+
+          password: null,
+          profile_image: profileImage,
+
+          is_verified: true,
+
+          otp: null,
+          otp_expiry: null,
+
+          // Riders must still go through your approval process.
+          is_rider_approved:
+            requestedUserType === "rider" ? false : undefined,
+        });
+      }
+    }
+
+    // 9. Generate a cryptographically random one-time login code
+    const loginCode = crypto.randomBytes(32).toString("hex");
+
+    const codeHash = hashOAuthCode(loginCode);
+
+    // 10. Store only its hash; expires in two minutes
+    await OAuthLoginCode.create({
+      code_hash: codeHash,
+      user_id: user._id,
+      expires_at: new Date(Date.now() + 2 * 60 * 1000),
+    });
+
+    // 11. Redirect to frontend callback
+    return res.redirect(
+      `${frontendURL}/auth/callback?code=${encodeURIComponent(loginCode)}`
+    );
+
+  } catch (error) {
+    console.error("Google OAuth callback error:", error);
+
+    const frontendURL = process.env.FRONTEND_URL;
+
+    if (frontendURL) {
+      return res.redirect(
+        `${frontendURL}/login?google_error=authentication_failed`
+      );
+    }
+
+    return res.status(500).send("Google authentication failed.");
+  }
+});
+// ======================================================
+// API 3: GOOGLE OAUTH CODE EXCHANGE
+// POST /auth/google/exchange
+// ======================================================
+
+app.post("/auth/google/exchange", async (req, res) => {
+  try {
+    const { code } = req.body;
+
+    // 1. Validate incoming code
+    if (!code || typeof code !== "string" || code.length !== 64) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid or missing authentication code.",
+      });
+    }
+
+    // 2. Hash the received code
+    const codeHash = crypto
+      .createHash("sha256")
+      .update(code)
+      .digest("hex");
+
+    // 3. Atomically consume the code.
+    // Only one request can successfully retrieve and delete it.
+    const loginCode = await OAuthLoginCode.findOneAndDelete({
+      code_hash: codeHash,
+      expires_at: { $gt: new Date() },
+    });
+
+    if (!loginCode) {
+      return res.status(401).json({
+        status: "error",
+        message: "Authentication code is invalid, expired, or already used.",
+      });
+    }
+
+    // 4. Find the corresponding DWJD user
+    const user = await User.findById(loginCode.user_id);
+
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User account not found.",
+      });
+    }
+
+    // 5. Verify account status
+    if (!user.is_verified) {
+      return res.status(403).json({
+        status: "error",
+        message: "Your account is not verified.",
+      });
+    }
+
+    if (!["user", "rider"].includes(user.user_type)) {
+      return res.status(403).json({
+        status: "error",
+        message: "Invalid account role.",
+      });
+    }
+
+    // 6. Generate DWJD JWT.
+    // Keep the existing token structure used by your application.
+    const token = jwt.sign(
+      {
+        id: user._id,
+        role: user.user_type,
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: "7d",
+      }
+    );
+
+    // 7. Return only safe user information
+    const safeUser = {
+      _id: user._id,
+      username: user.username,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      email: user.email,
+      phone: user.phone || "",
+      user_type: user.user_type,
+      auth_provider: user.auth_provider,
+      profile_image: user.profile_image || "",
+      is_verified: user.is_verified,
+      is_rider_approved: user.is_rider_approved,
+    };
+
+    return res.status(200).json({
+      status: "login_success",
+      message: "Google authentication successful.",
+      token,
+      user: safeUser,
+    });
+
+  } catch (error) {
+    console.error("Google exchange error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Google authentication failed.",
+    });
+  }
+});
+// ======================================================
+// API 4: FORGOT PASSWORD
+// POST /forgot-password
+// ======================================================
+
+app.post("/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // 1. Validate email
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({
+        status: "error",
+        message: "Please provide a valid email address.",
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // Basic email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailRegex.test(normalizedEmail)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Please provide a valid email address.",
+      });
+    }
+
+    // 2. Find account
+    const user = await User.findOne({
+      email: normalizedEmail,
+    });
+
+    // Same response for unknown emails and Google-only accounts.
+    // This prevents revealing which email addresses have accounts.
+    const genericResponse = {
+      status: "success",
+      message:
+        "If an eligible account exists, password reset instructions will be sent to its registered email.",
+    };
+
+    if (
+      !user ||
+      !user.is_verified ||
+      user.auth_provider === "google" ||
+      !user.password
+    ) {
+      return res.status(200).json(genericResponse);
+    }
+
+    // 3. Prevent repeated OTP requests within 60 seconds
+    const cooldown = 60 * 1000;
+
+    if (
+      user.reset_password_last_sent_at &&
+      Date.now() - user.reset_password_last_sent_at.getTime() < cooldown
+    ) {
+      return res.status(200).json(genericResponse);
+    }
+
+    // 4. Generate secure six-digit OTP
+    const otp = crypto
+      .randomInt(100000, 1000000)
+      .toString();
+
+    // 5. Hash OTP
+    const otpHash = hashResetOTP(otp);
+
+    // 6. Store hash and expiry
+    user.reset_password_otp_hash = otpHash;
+
+    user.reset_password_otp_expiry = new Date(
+      Date.now() + 10 * 60 * 1000
+    );
+
+    user.reset_password_attempts = 0;
+
+    user.reset_password_last_sent_at = new Date();
+
+    await user.save();
+
+    // 7. Send OTP using your existing Brevo helper
+    try {
+      await sendEmail({
+        to: normalizedEmail,
+        subject: "DWJD Password Reset OTP",
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 20px;">
+            <h2>DWJD Password Reset</h2>
+
+            <p>Hello ${user.first_name || "User"},</p>
+
+            <p>
+              We received a request to reset your DWJD account password.
+            </p>
+
+            <h1 style="letter-spacing: 8px;">${otp}</h1>
+
+            <p>
+              This OTP is valid for 10 minutes.
+            </p>
+
+            <p>
+              Do not share this OTP with anyone.
+            </p>
+
+            <p>
+              If you did not request this, you can ignore this email.
+            </p>
+
+            <br />
+
+            <strong>DWJD Team</strong>
+          </div>
+        `,
+      });
+    } catch (emailError) {
+      console.error(
+        "Password reset email error:",
+        emailError.response?.data || emailError.message
+      );
+
+      // Invalidate OTP if email delivery fails
+      user.reset_password_otp_hash = null;
+      user.reset_password_otp_expiry = null;
+      user.reset_password_attempts = 0;
+      user.reset_password_last_sent_at = null;
+
+      await user.save();
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to send password reset email. Please try again later.",
+      });
+    }
+
+    // 8. Success
+    return res.status(200).json(genericResponse);
+
+  } catch (error) {
+    console.error("Forgot password error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Something went wrong. Please try again later.",
+    });
+  }
+});
+// ======================================================
+// API 5: RESET PASSWORD
+// POST /reset-password
+// ======================================================
+
+app.post("/reset-password", async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    // 1. Validate required fields
+    if (
+      !email ||
+      typeof email !== "string" ||
+      !otp ||
+      typeof otp !== "string" ||
+      !newPassword ||
+      typeof newPassword !== "string"
+    ) {
+      return res.status(400).json({
+        status: "error",
+        message: "Email, OTP and new password are required.",
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // 2. Validate OTP format
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({
+        status: "error",
+        message: "OTP must contain exactly six digits.",
+      });
+    }
+
+    // 3. Validate new password
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        status: "error",
+        message: "Password must contain at least 8 characters.",
+      });
+    }
+
+    if (newPassword.length > 128) {
+      return res.status(400).json({
+        status: "error",
+        message: "Password cannot exceed 128 characters.",
+      });
+    }
+
+    // 4. Find account
+    const user = await User.findOne({
+      email: normalizedEmail,
+    });
+
+    if (!user || !user.is_verified) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid or expired password reset request.",
+      });
+    }
+
+    // 5. Only local-password accounts can reset this way
+    if (user.auth_provider === "google" || !user.password) {
+      return res.status(400).json({
+        status: "error",
+        message: "This account does not use password authentication.",
+      });
+    }
+
+    // 6. Check whether reset OTP exists
+    if (
+      !user.reset_password_otp_hash ||
+      !user.reset_password_otp_expiry
+    ) {
+      return res.status(400).json({
+        status: "error",
+        message: "No active password reset request. Request a new OTP.",
+      });
+    }
+
+    // 7. Check OTP expiry
+    if (user.reset_password_otp_expiry.getTime() <= Date.now()) {
+      user.reset_password_otp_hash = null;
+      user.reset_password_otp_expiry = null;
+      user.reset_password_attempts = 0;
+      user.reset_password_last_sent_at = null;
+
+      await user.save();
+
+      return res.status(400).json({
+        status: "error",
+        message: "OTP has expired. Please request a new OTP.",
+      });
+    }
+
+    // 8. Check maximum attempts
+    const MAX_ATTEMPTS = 5;
+
+    if (user.reset_password_attempts >= MAX_ATTEMPTS) {
+      user.reset_password_otp_hash = null;
+      user.reset_password_otp_expiry = null;
+      user.reset_password_attempts = 0;
+      user.reset_password_last_sent_at = null;
+
+      await user.save();
+
+      return res.status(429).json({
+        status: "error",
+        message: "Maximum OTP attempts exceeded. Request a new OTP.",
+      });
+    }
+
+    // 9. Compare submitted OTP with stored hash
+    const submittedHash = hashResetOTP(otp);
+
+    const storedHash = Buffer.from(
+      user.reset_password_otp_hash,
+      "hex"
+    );
+
+    const receivedHash = Buffer.from(
+      submittedHash,
+      "hex"
+    );
+
+    const otpMatches =
+      storedHash.length === receivedHash.length &&
+      crypto.timingSafeEqual(storedHash, receivedHash);
+
+    if (!otpMatches) {
+      user.reset_password_attempts += 1;
+
+      const attemptsLeft =
+        MAX_ATTEMPTS - user.reset_password_attempts;
+
+      // Invalidate OTP after the fifth failed attempt
+      if (attemptsLeft <= 0) {
+        user.reset_password_otp_hash = null;
+        user.reset_password_otp_expiry = null;
+        user.reset_password_attempts = 0;
+        user.reset_password_last_sent_at = null;
+      }
+
+      await user.save();
+
+      return res.status(400).json({
+        status: "error",
+        message:
+          attemptsLeft <= 0
+            ? "Maximum OTP attempts exceeded. Request a new OTP."
+            : `Incorrect OTP. ${attemptsLeft} attempts remaining.`,
+      });
+    }
+
+    // 10. Hash the new password
+    const saltRounds = 12;
+
+    const hashedPassword = await bcrypt.hash(
+      newPassword,
+      saltRounds
+    );
+
+    // 11. Update password and clear reset information
+    user.password = hashedPassword;
+
+    user.reset_password_otp_hash = null;
+    user.reset_password_otp_expiry = null;
+    user.reset_password_attempts = 0;
+    user.reset_password_last_sent_at = null;
+
+    await user.save();
+
+    // 12. Success
+    return res.status(200).json({
+      status: "success",
+      message: "Password reset successfully. Please login with your new password.",
+    });
+
+  } catch (error) {
+    console.error("Reset password error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to reset password. Please try again later.",
+    });
+  }
+});
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
