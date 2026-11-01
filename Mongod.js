@@ -2684,12 +2684,38 @@ app.post(
       // ============================================
 
       if (riderRequest.status === "account_created") {
-        return res.status(409).json({
-          status: "error",
-          message: "A rider account has already been created.",
-          rider_id: riderRequest.created_user_id,
-        });
-      }
+  const existingRider = await User.findById(
+    riderRequest.created_user_id
+  ).select(
+    "_id username email first_name last_name user_type"
+  );
+
+  if (!existingRider) {
+    return res.status(409).json({
+      status: "error",
+      message:
+        "The application is marked as created, but the rider account could not be found.",
+    });
+  }
+
+  return res.status(200).json({
+    status: "rider_created",
+    message: "Rider account was already created successfully.",
+    rider: {
+      id: existingRider._id,
+      username: existingRider.username,
+      email: existingRider.email,
+      first_name: existingRider.first_name,
+      last_name: existingRider.last_name,
+      user_type: existingRider.user_type,
+    },
+    request: {
+      id: riderRequest._id,
+      status: riderRequest.status,
+    },
+    email_sent: null,
+  });
+}
 
       // ============================================
       // 4. REQUIRE APPROVAL
