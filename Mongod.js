@@ -646,74 +646,129 @@ app.post("/verify-otp", async (req, res) => {
   }
 });
 
+
 app.post("/login", async (req, res) => {
   try {
     const { email, password, user_type } = req.body;
 
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.json({ status: "invalid_credentials" });
+    // 1. Validate required fields
+    if (
+      !email ||
+      !password ||
+      !["user", "rider"].includes(user_type)
+    ) {
+      return res.status(400).json({
+        status: "invalid_input",
+        message: "Email, password and valid account type are required.",
+      });
     }
-    // Google-only accounts do not have a local password.
-if (!user.password) {
-  return res.json({
-    status: "invalid_credentials",
-    message: "This account uses Google login. Please continue with Google.",
-  });
-}
 
-const match = await bcrypt.compare(password, user.password);
+    // 2. Find account
+    const normalizedEmail = email.trim().toLowerCase();
 
-if (!match) {
-  return res.json({
-    status: "invalid_credentials",
-    message: "Invalid email or password.",
-  });
-}
+    const user = await User.findOne({
+      email: normalizedEmail,
+    });
 
-    /* 🔴 NOT VERIFIED → OTP REQUIRED */
+    if (!user) {
+      return res.status(401).json({
+        status: "invalid_credentials",
+        message: "Invalid email or password.",
+      });
+    }
+
+    // 3. Google-only accounts must use Google login
+    if (!user.password) {
+      return res.status(401).json({
+        status: "invalid_credentials",
+        message: "This account uses Google login. Please continue with Google.",
+      });
+    }
+
+    // 4. Verify password
+    const match = await bcrypt.compare(password, user.password);
+
+    if (!match) {
+      return res.status(401).json({
+        status: "invalid_credentials",
+        message: "Invalid email or password.",
+      });
+    }
+
+    // 5. Verify email
     if (!user.is_verified) {
-      return res.json({
+      return res.status(403).json({
         status: "otp_required",
         email: user.email,
       });
     }
 
-    /* 🔐 ROLE CHECK (NON-ADMIN ONLY) */
-    if (user.user_type !== "admin" && user.user_type !== user_type) {
-      return res.json({ status: "invalid_credentials" });
+    // 6. Enforce account type
+    // A converted rider cannot log in through User Login.
+    if (user.user_type !== user_type) {
+      return res.status(403).json({
+        status: "account_type_mismatch",
+        message:
+          user.user_type === "rider"
+            ? "This account has been converted into a Rider account. Please use Rider Login."
+            : "This is a User account. Please use User Login.",
+      });
     }
 
-    /* ✅ LOGIN SUCCESS */
-    const token = jwt.sign(
-      { id: user._id, role: user.user_type },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-    const safeUser = {
-  _id: user._id,
-  username: user.username,
-  first_name: user.first_name,
-  last_name: user.last_name,
-  email: user.email,
-  phone: user.phone || "",
-  user_type: user.user_type,
-  auth_provider: user.auth_provider,
-  profile_image: user.profile_image || "",
-  is_verified: user.is_verified,
-  is_rider_approved: user.is_rider_approved,
-};
+    // 7. Rider approval check
+    if (
+      user_type === "rider" &&
+      user.is_rider_approved !== true
+    ) {
+      return res.status(403).json({
+        status: "rider_not_approved",
+        message: "Your rider account is not approved.",
+      });
+    }
 
-    res.json({
+    // 8. Generate JWT
+    const token = jwt.sign(
+  {
+    id: user._id,
+    role: user.user_type,
+    token_version: user.token_version ?? 0,
+  },
+  process.env.JWT_SECRET,
+  { expiresIn: "7d" }
+);
+
+    // 9. Return safe user information only
+    const safeUser = {
+      _id: user._id,
+      username: user.username,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      email: user.email,
+      phone: user.phone || "",
+      user_type: user.user_type,
+      auth_provider: user.auth_provider,
+      profile_image: user.profile_image || "",
+      is_verified: user.is_verified,
+      is_rider_approved: user.is_rider_approved,
+    };
+
+    return res.status(200).json({
       status: "login_success",
+      message: "Login successful.",
       token,
-      user,
+      user: safeUser,
     });
+
   } catch (err) {
     console.error("Login error:", err);
-    res.status(500).json({ status: "error" });
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to log in. Please try again.",
+    });
   }
 });
+
 
 app.post("/resend-otp", async (req, res) => {
   try {
@@ -1185,14 +1240,14 @@ app.post("/admin/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-      {
-        id: admin._id,
-        role: admin.user_type,
-        admin: true,
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+  {
+    id: user._id,
+    role: user.user_type,
+    token_version: user.token_version ?? 0,
+  },
+  process.env.JWT_SECRET,
+  { expiresIn: "7d" }
+);
 
     return res.json({
       status: "login_success",
@@ -2656,13 +2711,227 @@ app.post(
 
       const existingUser = await User.findOne({ email });
 
-      if (existingUser) {
-        return res.status(409).json({
-          status: "error",
-          message:
-            "An account already exists with this email address. Review the existing account before proceeding.",
-        });
+// ============================================
+// EXISTING USER: CONVERT TO RIDER
+// ============================================
+
+if (existingUser) {
+
+  // Only normal user accounts can be converted.
+  if (existingUser.user_type !== "user") {
+    return res.status(409).json({
+      status: "error",
+      message:
+        "This account cannot be converted into a rider account.",
+    });
+  }
+
+  const session = await mongoose.startSession();
+
+  let convertedUser;
+  let updatedRequest;
+
+  try {
+
+    // Update the user and application together.
+    await session.withTransaction(async () => {
+
+      const convertedUser = await User.findOneAndUpdate(
+  {
+    _id: existingUser._id,
+    user_type: "user",
+  },
+  {
+    $set: {
+      user_type: "rider",
+      is_rider_approved: true,
+    },
+    $inc: {
+      token_version: 1,
+    },
+  },
+  {
+    new: true,
+    runValidators: true,
+    session,
+  }
+);
+
+      if (!convertedUser) {
+        throw new Error("USER_CONVERSION_FAILED");
       }
+
+      updatedRequest = await BecomeRider.findOneAndUpdate(
+        {
+          _id: riderRequest._id,
+          status: "approved",
+          created_user_id: null,
+        },
+        {
+          $set: {
+            status: "account_created",
+            created_user_id: convertedUser._id,
+            account_created_at: new Date(),
+          },
+        },
+        {
+          new: true,
+          runValidators: true,
+          session,
+        }
+      );
+
+      if (!updatedRequest) {
+        throw new Error("RIDER_REQUEST_CHANGED");
+      }
+
+    });
+
+  } catch (conversionError) {
+
+    console.error(
+      "Existing user rider conversion failed:",
+      conversionError
+    );
+
+    if (
+      conversionError.message === "USER_CONVERSION_FAILED" ||
+      conversionError.message === "RIDER_REQUEST_CHANGED"
+    ) {
+      return res.status(409).json({
+        status: "error",
+        message:
+          "The account or application changed. Please refresh and try again.",
+      });
+    }
+
+    throw conversionError;
+
+  } finally {
+    await session.endSession();
+  }
+
+  // ============================================
+  // SEND ACCOUNT CONVERSION EMAIL
+  // ============================================
+
+  let emailSent = false;
+
+  try {
+
+    await sendEmail({
+      to: email,
+
+      subject: "DWJD - Your Existing Account Is Now a Rider Account",
+
+      html: `
+        <div style="
+          font-family: Arial, sans-serif;
+          max-width: 600px;
+          margin: auto;
+          padding: 25px;
+          color: #1e293b;
+        ">
+
+          <h2>Hello ${escapeHtml(convertedUser.first_name)},</h2>
+
+          <p>
+            Great news! Your DWJD rider application has
+            been approved.
+          </p>
+
+          <p>
+            Your existing DWJD account has successfully
+            been converted into a Rider account.
+          </p>
+
+          <div style="
+            background: #ecfdf5;
+            padding: 18px;
+            border-radius: 10px;
+            margin: 20px 0;
+          ">
+            <h3 style="color: #047857;">
+              Account Conversion Successful
+            </h3>
+
+            <p>
+              <strong>Username:</strong>
+              ${escapeHtml(convertedUser.username)}
+            </p>
+
+            <p>
+              <strong>Account Type:</strong> Rider
+            </p>
+          </div>
+
+          <p>
+            You can now log in through the DWJD Rider Login
+            using your existing login credentials or Google
+            sign-in.
+          </p>
+
+          <p>
+            Your existing account information and login
+            details have been preserved.
+          </p>
+
+          <p>
+            Welcome to the DWJD Rider Community!
+          </p>
+
+          <p>
+            Regards,<br />
+            <strong>DWJD Team</strong>
+          </p>
+
+        </div>
+      `,
+    });
+
+    emailSent = true;
+
+  } catch (emailError) {
+
+    console.error(
+      "Rider conversion email failed:",
+      emailError.message
+    );
+
+  }
+
+  // ============================================
+  // EXISTING USER CONVERSION RESPONSE
+  // ============================================
+
+  return res.status(200).json({
+
+    status: emailSent
+      ? "existing_user_converted"
+      : "existing_user_converted_email_failed",
+
+    message: emailSent
+      ? "Existing user account successfully converted into a rider account. Notification email sent."
+      : "Account converted successfully, but notification email could not be sent.",
+
+    email_sent: emailSent,
+
+    rider: {
+      id: convertedUser._id,
+      username: convertedUser.username,
+      email: convertedUser.email,
+      first_name: convertedUser.first_name,
+      last_name: convertedUser.last_name,
+      user_type: convertedUser.user_type,
+    },
+
+    request: {
+      id: updatedRequest._id,
+      status: updatedRequest.status,
+    },
+
+  });
+}
 
       // ============================================
       // 6. GENERATE A UNIQUE USERNAME
@@ -6233,11 +6502,12 @@ app.get("/oauth2callback", async (req, res) => {
 // POST /auth/google/exchange
 // ======================================================
 
+
 app.post("/auth/google/exchange", async (req, res) => {
   try {
     const { code } = req.body;
 
-    // 1. Validate incoming code
+    // 1. Validate Google login code
     if (!code || typeof code !== "string" || code.length !== 64) {
       return res.status(400).json({
         status: "error",
@@ -6251,8 +6521,7 @@ app.post("/auth/google/exchange", async (req, res) => {
       .update(code)
       .digest("hex");
 
-    // 3. Atomically consume the code.
-    // Only one request can successfully retrieve and delete it.
+    // 3. Consume one-time login code
     const loginCode = await OAuthLoginCode.findOneAndDelete({
       code_hash: codeHash,
       expires_at: { $gt: new Date() },
@@ -6265,7 +6534,7 @@ app.post("/auth/google/exchange", async (req, res) => {
       });
     }
 
-    // 4. Find the corresponding DWJD user
+    // 4. Find current account role from MongoDB
     const user = await User.findById(loginCode.user_id);
 
     if (!user) {
@@ -6275,7 +6544,7 @@ app.post("/auth/google/exchange", async (req, res) => {
       });
     }
 
-    // 5. Verify account status
+    // 5. Verify account
     if (!user.is_verified) {
       return res.status(403).json({
         status: "error",
@@ -6290,20 +6559,29 @@ app.post("/auth/google/exchange", async (req, res) => {
       });
     }
 
-    // 6. Generate DWJD JWT.
-    // Keep the existing token structure used by your application.
-    const token = jwt.sign(
-      {
-        id: user._id,
-        role: user.user_type,
-      },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: "7d",
-      }
-    );
+    // 6. Riders must be approved
+    if (
+      user.user_type === "rider" &&
+      user.is_rider_approved !== true
+    ) {
+      return res.status(403).json({
+        status: "rider_not_approved",
+        message: "Your rider account is not approved.",
+      });
+    }
 
-    // 7. Return only safe user information
+    // 7. Generate JWT using the CURRENT MongoDB role
+   const token = jwt.sign(
+  {
+    id: user._id,
+    role: user.user_type,
+    token_version: user.token_version ?? 0,
+  },
+  process.env.JWT_SECRET,
+  { expiresIn: "7d" }
+);
+
+    // 8. Return safe user details
     const safeUser = {
       _id: user._id,
       username: user.username,
@@ -6334,6 +6612,7 @@ app.post("/auth/google/exchange", async (req, res) => {
     });
   }
 });
+
 // ======================================================
 // PASSWORD RESET OTP HASH HELPER
 // ======================================================

@@ -132,10 +132,20 @@ const userSchema = new mongoose.Schema(
     // RIDER APPROVAL
     // ========================================
 
-    is_rider_approved: {
-      type: Boolean,
-      default: false,
-    },
+   is_rider_approved: {
+  type: Boolean,
+  default: false,
+},
+
+// ========================================
+// JWT SESSION VERSION
+// ========================================
+
+token_version: {
+  type: Number,
+  default: 0,
+  min: 0,
+},
   },
   {
     timestamps: true,
