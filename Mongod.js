@@ -1282,465 +1282,423 @@ app.post("/admin/create-rider", async (req, res) => {
 });
 
 /* =================================================
-   BECOME RIDER ONBOARDING FLOW
+   BECOME RIDER: VERIFY EXISTING USER ELIGIBILITY
+   POST /rider/verify-email
 ================================================= */
 
-app.post("/rider/verify-email", async (req, res) => {
+/* =================================================
+   AUTHENTICATE EXISTING USER FOR RIDER APPLICATION
+================================================= */
+
+const authenticateRiderApplicant = async (req, res, next) => {
   try {
-    const { email } = req.body;
+    const authorization = req.headers.authorization;
 
-    if (!email || typeof email !== "string") {
-      return res.status(400).json({
-        status: "missing_email",
-        message: "Please enter your email address.",
+    if (!authorization || !authorization.startsWith("Bearer ")) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Please log in before requesting rider access.",
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const token = authorization.slice(7).trim();
 
-    if (!emailRegex.test(normalizedEmail)) {
-      return res.status(400).json({
-        status: "invalid_email",
-        message: "Please enter a valid email address.",
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    if (!decoded.id) {
+      return res.status(401).json({
+        status: "invalid_token",
+        message: "Invalid login session.",
       });
     }
 
-    const existingRider = await User.findOne({
-      email: normalizedEmail,
-      user_type: "rider",
-    });
+    const user = await User.findById(decoded.id);
 
-    if (existingRider) {
-      return res.status(409).json({
-        status: "rider_already_exists",
-        message: "A rider account already exists for this email address.",
+    if (!user) {
+      return res.status(404).json({
+        status: "user_not_found",
+        message: "Your registered account could not be found.",
       });
     }
 
-    const existingRequest = await BecomeRider.findOne({
-      email: normalizedEmail,
-      status: {
-        $in: ["pending", "under_review", "approved"],
-      },
-    });
-
-    if (existingRequest) {
-      return res.status(409).json({
-        status: "request_already_exists",
-        message: "A rider account request already exists for this email address.",
+    if (user.is_active === false) {
+      return res.status(403).json({
+        status: "account_inactive",
+        message: "Your account is inactive.",
       });
     }
 
-    return res.status(200).json({
-      status: "email_eligible",
-      message: "You can continue with your rider account request.",
-    });
+    if (user.user_type !== "user") {
+      return res.status(403).json({
+        status: "not_eligible",
+        message: "Only registered users can request rider access.",
+      });
+    }
+
+    if (!user.is_verified) {
+      return res.status(403).json({
+        status: "email_not_verified",
+        message: "Please verify your email before applying.",
+      });
+    }
+
+    req.applicant = user;
+
+    return next();
+
   } catch (error) {
-    console.error("Rider email verification error:", error);
+    if (
+      error.name === "TokenExpiredError" ||
+      error.name === "JsonWebTokenError" ||
+      error.name === "NotBeforeError"
+    ) {
+      return res.status(401).json({
+        status: "invalid_token",
+        message: "Your login session is invalid or expired. Please log in again.",
+      });
+    }
+
+    console.error("Rider applicant authentication error:", error);
+
     return res.status(500).json({
       status: "error",
-      message: "Unable to verify your email right now.",
+      message: "Unable to authenticate your account.",
     });
   }
-});
+};
 
-// ======================================================
-// BECOME RIDER: SUBMIT ACCOUNT REQUEST
-// POST /rider/request-account
-//
-// Camera photo -> Google Drive -> MongoDB
-// ======================================================
-
-app.post("/rider/request-account", async (req, res) => {
-  try {
-    const {
-      first_name,
-      last_name,
-      email,
-      phone,
-      profile_image_data,
-    } = req.body || {};
-
-    // ==================================================
-    // 1. VALIDATE REQUIRED FIELDS
-    // ==================================================
-
-    if (
-      typeof first_name !== "string" ||
-      typeof last_name !== "string" ||
-      typeof email !== "string" ||
-      typeof phone !== "string" ||
-      !first_name.trim() ||
-      !last_name.trim() ||
-      !email.trim() ||
-      !phone.trim()
-    ) {
-      return res.status(400).json({
-        status: "missing_fields",
-        message: "Please fill in all required fields.",
-      });
-    }
-
-    const normalizedFirstName = first_name.trim();
-    const normalizedLastName = last_name.trim();
-    const normalizedEmail = email.trim().toLowerCase();
-    const normalizedPhone = phone.trim();
-
-    // ==================================================
-    // 2. VALIDATE EMAIL
-    // ==================================================
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    if (!emailRegex.test(normalizedEmail)) {
-      return res.status(400).json({
-        status: "invalid_email",
-        message: "Please enter a valid email address.",
-      });
-    }
-
-    // ==================================================
-    // 3. VALIDATE PHONE NUMBER
-    // ==================================================
-
-    // Supports international numbers such as +919876543210.
-
-    const normalizedPhoneDigits = normalizedPhone.replace(
-      /[\s()-]/g,
-      ""
-    );
-
-    if (!/^\+?\d{10,15}$/.test(normalizedPhoneDigits)) {
-      return res.status(400).json({
-        status: "invalid_phone",
-        message: "Please enter a valid mobile number.",
-      });
-    }
-
-    // ==================================================
-    // 4. VALIDATE CAMERA PHOTO DATA
-    // ==================================================
-
-    // The frontend sends:
-    // data:image/jpeg;base64,<BASE64_IMAGE_DATA>
-
-    if (
-      typeof profile_image_data !== "string" ||
-      !profile_image_data.startsWith("data:image/jpeg;base64,")
-    ) {
-      return res.status(400).json({
-        status: "invalid_profile_image",
-        message:
-          "Please capture and confirm a profile photo using your camera.",
-      });
-    }
-
-    // Extract the Base64 image data.
-
-    const base64Match = profile_image_data.match(
-      /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/
-    );
-
-    if (!base64Match) {
-      return res.status(400).json({
-        status: "invalid_profile_image",
-        message: "The captured profile photo is invalid.",
-      });
-    }
-
-    const imageBuffer = Buffer.from(base64Match[1], "base64");
-
-    // Limit the decoded image to 5 MB.
-
-    const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
-
-    if (
-      imageBuffer.length === 0 ||
-      imageBuffer.length > MAX_IMAGE_SIZE
-    ) {
-      return res.status(400).json({
-        status: "invalid_profile_image",
-        message:
-          "The profile photo must be a valid image smaller than 5 MB.",
-      });
-    }
-
-    // Verify that the decoded file begins with the JPEG signature.
-
-    const isJpeg =
-      imageBuffer.length >= 3 &&
-      imageBuffer[0] === 0xff &&
-      imageBuffer[1] === 0xd8 &&
-      imageBuffer[2] === 0xff;
-
-    if (!isJpeg) {
-      return res.status(400).json({
-        status: "invalid_profile_image",
-        message: "Please submit a valid JPEG camera photo.",
-      });
-    }
-
-    // ==================================================
-    // 5. CHECK EXISTING RIDER ACCOUNT
-    // ==================================================
-
-    const existingRider = await User.findOne({
-      email: normalizedEmail,
-      user_type: "rider",
-    });
-
-    if (existingRider) {
-      return res.status(409).json({
-        status: "rider_already_exists",
-        message:
-          "A rider account already exists for this email address.",
-      });
-    }
-
-    // ==================================================
-    // 6. CHECK EXISTING RIDER REQUEST
-    // ==================================================
-
-    const existingRequest = await BecomeRider.findOne({
-      email: normalizedEmail,
-      status: {
-        $in: ["pending", "under_review", "approved"],
-      },
-    });
-
-    if (existingRequest) {
-      return res.status(409).json({
-        status: "request_already_exists",
-        message:
-          "Your rider account request has already been submitted.",
-      });
-    }
-
-    // ==================================================
-    // 7. UPLOAD CAMERA PHOTO TO GOOGLE DRIVE
-    // ==================================================
-
-    // Convert the captured image into the file object
-    // expected by your existing uploadProfileImage helper.
-
-    const cameraPhotoFile = {
-      buffer: imageBuffer,
-      mimetype: "image/jpeg",
-      originalname: "rider-profile.jpg",
-      size: imageBuffer.length,
-    };
-
-    const uploadedImage = await uploadProfileImage(
-      cameraPhotoFile,
-      "rider"
-    );
-
-    // Make sure Google Drive returned a usable URL.
-
-    if (
-      !uploadedImage ||
-      typeof uploadedImage.url !== "string" ||
-      !uploadedImage.url.trim()
-    ) {
-      throw new Error(
-        "Google Drive did not return a profile image URL."
-      );
-    }
-
-    const normalizedProfileImage = uploadedImage.url.trim();
-
-    console.log(
-      "Rider profile photo uploaded successfully to Google Drive."
-    );
-
-    // ==================================================
-    // 8. SAVE RIDER REQUEST TO MONGODB
-    // ==================================================
-
-    const riderRequest = await BecomeRider.create({
-      first_name: normalizedFirstName,
-      last_name: normalizedLastName,
-      email: normalizedEmail,
-      phone: normalizedPhoneDigits,
-
-      // Save the Google Drive URL, NOT the Base64 image.
-      profile_image: normalizedProfileImage,
-
-      email_checked: true,
-
-      status: "pending",
-
-      reviewed_by: null,
-      reviewed_at: null,
-
-      rejection_reason: "",
-
-      created_user_id: null,
-      account_created_at: null,
-    });
-
-    console.log(
-      "New rider request received:",
-      riderRequest._id
-    );
-
-    // ==================================================
-    // 9. SEND CONFIRMATION EMAIL
-    // ==================================================
-
-    let emailSent = false;
-
+app.post(
+  "/rider/verify-email",
+  authenticateRiderApplicant,
+  async (req, res) => {
     try {
-      await sendEmail({
-        to: normalizedEmail,
+      const user = req.applicant;
 
-        subject:
-          "Your DWJD Rider Account Request Has Been Received",
+      // Optional frontend email must match the logged-in account.
+      if (
+        req.body.email &&
+        req.body.email.trim().toLowerCase() !== user.email
+      ) {
+        return res.status(403).json({
+          status: "email_mismatch",
+          message: "Please use the email associated with your account.",
+        });
+      }
 
-        html: `
-          <!DOCTYPE html>
-          <html>
-            <body style="
-              margin: 0;
-              padding: 0;
-              background-color: #f4f6f8;
-              font-family: Arial, sans-serif;
-            ">
-              <div style="
-                max-width: 600px;
-                margin: 30px auto;
-                background: #ffffff;
-                border-radius: 12px;
-                overflow: hidden;
-                border: 1px solid #e5e7eb;
+      // Check existing rider application.
+      const existingRequest = await BecomeRider.findOne({
+        $or: [
+          { user_id: user._id },
+          { email: user.email },
+        ],
+        status: {
+          $in: [
+            "pending",
+            "under_review",
+            "approved",
+            "account_created",
+          ],
+        },
+      });
+
+      if (existingRequest) {
+        return res.status(409).json({
+          status: "request_already_exists",
+          message:
+            existingRequest.status === "account_created"
+              ? "Your account has already been converted into a rider account."
+              : "You already have an active rider application.",
+          request_status: existingRequest.status,
+        });
+      }
+
+      return res.status(200).json({
+        status: "email_eligible",
+        message: "Your account is eligible to apply for rider access.",
+
+        user: {
+          id: user._id,
+          username: user.username,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          email: user.email,
+          phone: user.phone || "",
+          profile_image: user.profile_image || "",
+        },
+      });
+
+    } catch (error) {
+      console.error("Rider email verification error:", error);
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to verify your rider eligibility.",
+      });
+    }
+  }
+);
+
+/* =================================================
+   BECOME RIDER: SUBMIT EXISTING USER APPLICATION
+   POST /rider/request-account
+
+   Existing User -> Rider Application
+   Existing profile photo is preserved.
+================================================= */
+
+app.post(
+  "/rider/request-account",
+  authenticateRiderApplicant,
+  async (req, res) => {
+    try {
+      const user = req.applicant;
+
+      // ==========================================
+      // 1. GET EXISTING USER INFORMATION
+      // ==========================================
+
+      const firstName = user.first_name;
+      const lastName = user.last_name;
+      const email = user.email;
+
+      // Use the registered phone unless the user
+      // has not saved one in their profile.
+      const phone = (
+        user.phone || req.body?.phone || ""
+      ).trim();
+
+      if (!firstName || !lastName || !email || !phone) {
+        return res.status(400).json({
+          status: "missing_fields",
+          message:
+            "Please complete your name and phone number in your profile before applying.",
+        });
+      }
+
+      // ==========================================
+      // 2. CHECK EXISTING RIDER ACCOUNT
+      // ==========================================
+
+      if (
+        user.user_type !== "user" ||
+        user.is_rider_approved === true
+      ) {
+        return res.status(409).json({
+          status: "already_rider",
+          message: "This account is already registered as a rider.",
+        });
+      }
+
+      // ==========================================
+      // 3. PREVENT DUPLICATE APPLICATIONS
+      // ==========================================
+
+      const existingRequest = await BecomeRider.findOne({
+        $or: [
+          { user_id: user._id },
+          { email: email },
+        ],
+        status: {
+          $in: [
+            "pending",
+            "under_review",
+            "approved",
+            "account_created",
+          ],
+        },
+      });
+
+      if (existingRequest) {
+        return res.status(409).json({
+          status: "request_already_exists",
+          message:
+            "You already have an active rider application.",
+          request_id: existingRequest._id,
+          request_status: existingRequest.status,
+        });
+      }
+
+      // ==========================================
+      // 4. SAVE APPLICATION
+      // ==========================================
+
+      const riderRequest = await BecomeRider.create({
+        // IMPORTANT: Link to the existing User.
+        user_id: user._id,
+
+        first_name: firstName,
+        last_name: lastName,
+        email: email,
+        phone: phone,
+
+        // Preserve the existing user's photo.
+        profile_image: user.profile_image || "",
+
+        email_checked: true,
+
+        status: "pending",
+
+        reviewed_by: null,
+        reviewed_at: null,
+
+        rejection_reason: "",
+
+        created_user_id: null,
+        account_created_at: null,
+
+        notification_status: "not_sent",
+        notification_sent_at: null,
+      });
+
+      console.log(
+        "New rider application submitted:",
+        riderRequest._id,
+        "User:",
+        user._id
+      );
+
+      // ==========================================
+      // 5. SEND CONFIRMATION EMAIL
+      // ==========================================
+
+      let emailSent = false;
+
+      try {
+        await sendEmail({
+          to: email,
+
+          subject: "DWJD Rider Application Received",
+
+          html: `
+            <!DOCTYPE html>
+            <html>
+              <body style="
+                margin: 0;
+                padding: 20px;
+                background: #f4f6f8;
+                font-family: Arial, sans-serif;
               ">
                 <div style="
-                  background: #111827;
-                  color: #ffffff;
-                  padding: 28px;
-                  text-align: center;
+                  max-width: 600px;
+                  margin: auto;
+                  padding: 30px;
+                  background: white;
+                  border-radius: 12px;
                 ">
-                  <h1 style="margin: 0;">DWJD</h1>
+                  <h1 style="color: #16a34a;">DWJD</h1>
 
-                  <p style="margin-bottom: 0;">
-                    Rider Account Request
-                  </p>
-                </div>
+                  <h2>Hello ${escapeHtml(firstName)},</h2>
 
-                <div style="padding: 30px;">
-                  <h2 style="color: #111827;">
-                    Hi ${escapeHtml(normalizedFirstName)},
-                  </h2>
-
-                  <p style="
-                    color: #4b5563;
-                    line-height: 1.7;
-                  ">
-                    Thank you for your interest in becoming
-                    a rider with DWJD!
-                  </p>
-
-                  <p style="
-                    color: #4b5563;
-                    line-height: 1.7;
-                  ">
+                  <p>
                     We have successfully received your
-                    rider account request.
+                    application to become a DWJD Rider.
                   </p>
 
-                  <div style="
-                    background: #eff6ff;
-                    border-left: 4px solid #2563eb;
-                    padding: 16px;
-                    margin: 24px 0;
-                    border-radius: 6px;
-                  ">
-                    <h3 style="color: #1d4ed8;">
-                      What happens next?
-                    </h3>
-
-                    <p style="
-                      color: #374151;
-                      line-height: 1.7;
-                    ">
-                      Our Customer Support team will review
-                      your request within 24 hours. We will
-                      contact you by email regarding the
-                      next steps.
-                    </p>
-                  </div>
-
-                  <p style="
-                    color: #4b5563;
-                    line-height: 1.7;
-                  ">
-                    Please keep an eye on your inbox for
-                    further updates.
+                  <p>
+                    Your existing DWJD account will remain
+                    unchanged while our team reviews your application.
                   </p>
 
-                  <p style="
-                    color: #111827;
-                    line-height: 1.7;
-                  ">
-                    Best regards,<br />
+                  <p><strong>Application details:</strong></p>
+
+                  <p>
+                    Name: ${escapeHtml(firstName)} ${escapeHtml(lastName)}
+                    <br />
+                    Email: ${escapeHtml(email)}
+                    <br />
+                    Application ID: ${escapeHtml(String(riderRequest._id))}
+                    <br />
+                    Status: Pending
+                  </p>
+
+                  <p>
+                    We will notify you by email when your
+                    application is approved or rejected.
+                  </p>
+
+                  <p>
+                    Regards,<br />
                     <strong>DWJD Customer Support Team</strong>
                   </p>
                 </div>
+              </body>
+            </html>
+          `,
+        });
 
-                <div style="
-                  background: #f9fafb;
-                  padding: 16px;
-                  text-align: center;
-                  color: #6b7280;
-                  font-size: 12px;
-                ">
-                  This is an automated confirmation email
-                  from DWJD.
-                </div>
-              </div>
-            </body>
-          </html>
-        `,
+        emailSent = true;
+
+        await BecomeRider.updateOne(
+          { _id: riderRequest._id },
+          {
+            $set: {
+              notification_status: "sent",
+              notification_sent_at: new Date(),
+            },
+          }
+        );
+
+      } catch (emailError) {
+        console.error(
+          "Rider application email failed:",
+          emailError.message
+        );
+
+        await BecomeRider.updateOne(
+          { _id: riderRequest._id },
+          {
+            $set: {
+              notification_status: "failed",
+            },
+          }
+        );
+      }
+
+      // ==========================================
+      // 6. SUCCESS RESPONSE
+      // ==========================================
+
+      return res.status(201).json({
+        status: "request_submitted",
+
+        message:
+          "Your rider application has been submitted successfully. Our team will review it.",
+
+        request_id: riderRequest._id,
+
+        email_sent: emailSent,
+
+        application: {
+          status: riderRequest.status,
+          user_id: riderRequest.user_id,
+          email: riderRequest.email,
+          profile_image: riderRequest.profile_image,
+        },
       });
 
-      emailSent = true;
-    } catch (emailError) {
-      // Do not delete the request if the email fails.
-
+    } catch (error) {
       console.error(
-        "Rider request confirmation email failed:",
-        emailError.message
+        "Become Rider request error:",
+        error
       );
+
+      // Handle duplicate-key errors safely.
+      if (error.code === 11000) {
+        return res.status(409).json({
+          status: "duplicate_request",
+          message: "A rider application already exists.",
+        });
+      }
+
+      return res.status(500).json({
+        status: "error",
+        message:
+          "We could not submit your rider application. Please try again.",
+      });
     }
-
-    // ==================================================
-    // 10. RETURN SUCCESS RESPONSE
-    // ==================================================
-
-    return res.status(201).json({
-      status: "request_submitted",
-
-      message:
-        "Your rider account request has been submitted successfully. Our Customer Support team will review your request within 24 hours.",
-
-      request_id: riderRequest._id,
-
-      email_sent: emailSent,
-    });
-  } catch (error) {
-    console.error(
-      "Become Rider request error:",
-      error
-    );
-
-    return res.status(500).json({
-      status: "error",
-      message:
-        "We could not submit your request right now. Please try again later.",
-    });
   }
-});
+);
+
 /* =================================================
    HTML ESCAPING HELPER
 ================================================= */
@@ -2586,23 +2544,30 @@ app.patch(
   }
 );
 
-// ============================================
-// CREATE RIDER ACCOUNT FROM APPROVED REQUEST
-// POST /admin/rider-requests/:requestId/create-account
-// ============================================
+
+/* =================================================
+   CONVERT EXISTING USER INTO RIDER
+   POST /admin/rider-requests/:requestId/create-account
+
+   Existing User -> Rider
+   No new account creation.
+================================================= */
 
 app.post(
   "/admin/rider-requests/:requestId/create-account",
   requireRiderManagementAccess,
   async (req, res) => {
-    let createdUserId = null;
+    const session = await mongoose.startSession();
+
+    let rider = null;
+    let updatedRequest = null;
 
     try {
-      // ============================================
-      // 1. VALIDATE REQUEST ID
-      // ============================================
-
       const { requestId } = req.params;
+
+      // ==========================================
+      // 1. VALIDATE REQUEST ID
+      // ==========================================
 
       if (!mongoose.Types.ObjectId.isValid(requestId)) {
         return res.status(400).json({
@@ -2611,361 +2576,338 @@ app.post(
         });
       }
 
-      // ============================================
-      // 2. FIND RIDER APPLICATION
-      // ============================================
+      // ==========================================
+      // 2. START TRANSACTION
+      // ==========================================
 
-      const riderRequest = await BecomeRider.findById(requestId);
+      await session.withTransaction(async () => {
 
-      if (!riderRequest) {
-        return res.status(404).json({
-          status: "error",
-          message: "Rider request not found.",
-        });
-      }
+        // Find the approved application.
+        const riderRequest = await BecomeRider.findById(
+          requestId
+        ).session(session);
 
-      // ============================================
-      // 3. CHECK WHETHER ACCOUNT ALREADY EXISTS
-      // ============================================
+        if (!riderRequest) {
+          throw new Error("REQUEST_NOT_FOUND");
+        }
 
-      if (riderRequest.status === "account_created") {
-        return res.status(409).json({
-          status: "error",
-          message: "A rider account has already been created.",
-          rider_id: riderRequest.created_user_id,
-        });
-      }
+        if (riderRequest.status === "account_created") {
+          throw new Error("ALREADY_CONVERTED");
+        }
 
-      // ============================================
-      // 4. REQUIRE APPROVAL
-      // ============================================
+        if (riderRequest.status !== "approved") {
+          throw new Error("REQUEST_NOT_APPROVED");
+        }
 
-      if (riderRequest.status !== "approved") {
-        return res.status(409).json({
-          status: "error",
-          message:
-            "Approve the rider request before creating an account.",
-        });
-      }
+        // ========================================
+        // 3. GET EXISTING USER ID
+        // ========================================
 
-      const email = riderRequest.email.trim().toLowerCase();
+        if (!riderRequest.user_id) {
+          throw new Error("EXISTING_USER_LINK_MISSING");
+        }
 
-      // ============================================
-      // 5. CHECK FOR EXISTING USER EMAIL
-      // ============================================
+        // ========================================
+        // 4. FIND EXISTING USER
+        // ========================================
 
-      const existingUser = await User.findOne({ email });
+        const existingUser = await User.findById(
+          riderRequest.user_id
+        ).session(session);
 
-      if (existingUser) {
-        return res.status(409).json({
-          status: "error",
-          message:
-            "An account already exists with this email address. Review the existing account before proceeding.",
-        });
-      }
+        if (!existingUser) {
+          throw new Error("EXISTING_USER_NOT_FOUND");
+        }
 
-      // ============================================
-      // 6. GENERATE A UNIQUE USERNAME
-      // ============================================
+        // Confirm that the application belongs to
+        // this exact user.
+        if (
+          existingUser.email.trim().toLowerCase() !==
+          riderRequest.email.trim().toLowerCase()
+        ) {
+          throw new Error("USER_EMAIL_MISMATCH");
+        }
 
-      const emailPrefix = email
-        .split("@")[0]
-        .toLowerCase()
-        .replace(/[^a-z0-9_]/g, "")
-        .slice(0, 20);
+        // Prevent conversion of inactive accounts.
+        if (existingUser.is_active === false) {
+          throw new Error("USER_ACCOUNT_INACTIVE");
+        }
 
-      let username = emailPrefix || "rider";
+        // ========================================
+        // 5. CHECK EXISTING USER ROLE
+        // ========================================
 
-      let usernameExists = await User.exists({ username });
+        if (
+          existingUser.user_type === "rider" &&
+          existingUser.is_rider_approved === true
+        ) {
+          throw new Error("USER_ALREADY_RIDER");
+        }
 
-      while (usernameExists) {
-        username = `${emailPrefix || "rider"}${crypto.randomInt(
-          1000,
-          100000
-        )}`;
+        if (existingUser.user_type !== "user") {
+          throw new Error("USER_ROLE_NOT_ELIGIBLE");
+        }
 
-        usernameExists = await User.exists({ username });
-      }
+        // ========================================
+        // 6. UPDATE EXISTING USER
+        // ========================================
 
-      // ============================================
-      // 7. GENERATE DEFAULT PASSWORD
-      // ============================================
+        rider = await User.findOneAndUpdate(
+          {
+            _id: existingUser._id,
+            user_type: "user",
+            is_rider_approved: { $ne: true },
+          },
+          {
+            $set: {
+              user_type: "rider",
+              is_rider_approved: true,
+              rider_approved_at: new Date(),
+            },
+          },
+          {
+            new: true,
+            runValidators: true,
+            session,
+          }
+        );
 
-      const defaultPassword = crypto
-        .randomBytes(18)
-        .toString("base64url");
+        if (!rider) {
+          throw new Error("USER_CONVERSION_FAILED");
+        }
 
-      // Hash the password before storing it.
-      const hashedPassword = await bcrypt.hash(
-        defaultPassword,
-        12
-      );
+        // ========================================
+        // 7. UPDATE RIDER APPLICATION
+        // ========================================
 
-      // ============================================
-      // 8. CREATE RIDER IN USER COLLECTION
-      // ============================================
+        updatedRequest = await BecomeRider.findOneAndUpdate(
+          {
+            _id: requestId,
+            user_id: existingUser._id,
+            status: "approved",
+            created_user_id: null,
+          },
+          {
+            $set: {
+              status: "account_created",
+              created_user_id: existingUser._id,
+              account_created_at: new Date(),
+            },
+          },
+          {
+            new: true,
+            runValidators: true,
+            session,
+          }
+        );
 
-      const rider = await User.create({
-        username,
-        email,
-        password: hashedPassword,
-
-        first_name: riderRequest.first_name,
-        last_name: riderRequest.last_name,
-        phone: riderRequest.phone,
-
-        user_type: "rider",
-
-        profile_image: "",
-        is_verified: false,
-        is_active: true,
-
-        otp: null,
-        otp_expiry: null,
+        if (!updatedRequest) {
+          throw new Error("APPLICATION_UPDATE_FAILED");
+        }
       });
 
-      createdUserId = rider._id;
+      // ==========================================
+      // 8. SEND APPROVAL EMAIL
+      // ==========================================
 
-      // ============================================
-      // 9. LINK RIDER TO APPLICATION
-      // ============================================
-
-      const updatedRequest = await BecomeRider.findOneAndUpdate(
-        {
-          _id: requestId,
-          status: "approved",
-          created_user_id: null,
-        },
-        {
-          $set: {
-            status: "account_created",
-            created_user_id: rider._id,
-            account_created_at: new Date(),
-          },
-        },
-        {
-          new: true,
-          runValidators: true,
-        }
-      );
-
-      // If another operation changed the request,
-      // remove the account created by this operation.
-      if (!updatedRequest) {
-        await User.deleteOne({ _id: rider._id });
-
-        createdUserId = null;
-
-        return res.status(409).json({
-          status: "error",
-          message:
-            "The request changed during account creation. Refresh the page and try again.",
-        });
-      }
-
-      // ============================================
-      // 10. SEND LOGIN CREDENTIALS THROUGH EMAIL
-      // ============================================
+      let emailSent = false;
 
       try {
         await sendEmail({
-          to: email,
+          to: rider.email,
 
-          subject: "Welcome to DWJD - Your Rider Account",
+          subject: "DWJD Rider Application Approved",
 
           html: `
             <!DOCTYPE html>
             <html>
-              <body
-                style="
-                  margin: 0;
-                  padding: 24px;
-                  background: #f1f5f9;
-                  font-family: Arial, sans-serif;
-                  color: #1e293b;
-                "
-              >
-                <div
-                  style="
-                    max-width: 600px;
-                    margin: auto;
-                    overflow: hidden;
-                    background: #ffffff;
-                    border-radius: 14px;
-                    border: 1px solid #e2e8f0;
-                  "
-                >
-                  <div
-                    style="
-                      padding: 28px;
-                      text-align: center;
-                      background: #0f172a;
-                      color: #ffffff;
-                    "
-                  >
-                    <h1 style="margin: 0;">DWJD</h1>
-                    <p style="margin-bottom: 0;">
-                      Rider Account Created
-                    </p>
-                  </div>
+              <body style="
+                font-family: Arial, sans-serif;
+                padding: 25px;
+                background: #f4f6f8;
+              ">
+                <div style="
+                  max-width: 600px;
+                  margin: auto;
+                  background: white;
+                  padding: 30px;
+                  border-radius: 12px;
+                ">
+                  <h1 style="color: #16a34a;">DWJD</h1>
 
-                  <div style="padding: 28px;">
-                    <h2>
-                      Hello ${escapeHtml(rider.first_name)},
-                    </h2>
+                  <h2>
+                    Congratulations ${escapeHtml(rider.first_name)}!
+                  </h2>
 
-                    <p>
-                      Your DWJD rider account has been created
-                      successfully.
-                    </p>
+                  <p>
+                    Your application to become a DWJD Rider
+                    has been approved.
+                  </p>
 
-                    <div
-                      style="
-                        padding: 20px;
-                        background: #f8fafc;
-                        border: 1px solid #e2e8f0;
-                        border-radius: 10px;
-                      "
-                    >
-                      <p>
-                        <strong>Username:</strong>
-                        ${escapeHtml(rider.username)}
-                      </p>
+                  <p>
+                    Your existing DWJD account has now been
+                    upgraded to a Rider account.
+                  </p>
 
-                      <p>
-                        <strong>Default password:</strong>
-                        ${escapeHtml(defaultPassword)}
-                      </p>
+                  <p>
+                    You can continue using your existing
+                    login credentials.
+                  </p>
 
-                      <p>
-                        <strong>Account type:</strong>
-                        Rider
-                      </p>
-                    </div>
+                  <p>
+                    Welcome to the DWJD Rider team!
+                  </p>
 
-                    <p style="margin-top: 24px;">
-                      Keep your login credentials confidential.
-                      Change your default password after signing in.
-                    </p>
-
-                    <p>
-                      Your account may require email verification
-                      before you can log in.
-                    </p>
-
-                    <p>
-                      Regards,<br />
-                      <strong>DWJD Team</strong>
-                    </p>
-                  </div>
+                  <p>
+                    Regards,<br />
+                    <strong>DWJD Support Team</strong>
+                  </p>
                 </div>
               </body>
             </html>
           `,
         });
 
-        // ============================================
-        // 11. SUCCESS RESPONSE
-        // ============================================
+        emailSent = true;
 
-        return res.status(201).json({
-          status: "rider_created",
+        await BecomeRider.updateOne(
+          { _id: updatedRequest._id },
+          {
+            $set: {
+              notification_status: "sent",
+              notification_sent_at: new Date(),
+            },
+          }
+        );
 
-          message:
-            "Rider account created successfully. Login credentials have been emailed.",
-
-          rider: {
-            id: rider._id,
-            username: rider.username,
-            email: rider.email,
-            first_name: rider.first_name,
-            last_name: rider.last_name,
-            user_type: rider.user_type,
-          },
-
-          request: {
-            id: updatedRequest._id,
-            status: updatedRequest.status,
-          },
-
-          email_sent: true,
-        });
       } catch (emailError) {
-        // The account already exists and is linked.
-        // Do not delete it or create another account.
-
         console.error(
-          "Rider credentials email failed:",
+          "Rider approval email failed:",
           emailError.message
         );
 
-        return res.status(201).json({
-          status: "rider_created_email_failed",
-
-          message:
-            "The rider account was created, but the credentials email could not be sent. Use a secure password-reset process to restore access.",
-
-          rider: {
-            id: rider._id,
-            username: rider.username,
-            email: rider.email,
-            first_name: rider.first_name,
-            last_name: rider.last_name,
-            user_type: rider.user_type,
-          },
-
-          request: {
-            id: updatedRequest._id,
-            status: updatedRequest.status,
-          },
-
-          email_sent: false,
-        });
-      }
-    } catch (error) {
-      // ============================================
-      // 12. HANDLE UNEXPECTED ERRORS
-      // ============================================
-
-      console.error("Create rider account error:", error);
-
-      // Best-effort cleanup if the account was created
-      // but was not linked to the application.
-      if (createdUserId) {
-        try {
-          const linkedRequest = await BecomeRider.findOne({
-            created_user_id: createdUserId,
-            status: "account_created",
-          });
-
-          if (!linkedRequest) {
-            await User.deleteOne({
-              _id: createdUserId,
-            });
+        await BecomeRider.updateOne(
+          { _id: updatedRequest._id },
+          {
+            $set: {
+              notification_status: "failed",
+            },
           }
-        } catch (cleanupError) {
-          console.error(
-            "Rider account cleanup error:",
-            cleanupError
-          );
-        }
+        );
       }
 
-      if (error.code === 11000) {
-        return res.status(409).json({
+      // ==========================================
+      // 9. SUCCESS RESPONSE
+      // ==========================================
+
+      return res.status(200).json({
+        status: "rider_converted",
+
+        message:
+          "Existing user successfully converted into an approved DWJD rider.",
+
+        rider: {
+          id: rider._id,
+          username: rider.username,
+          email: rider.email,
+          first_name: rider.first_name,
+          last_name: rider.last_name,
+          user_type: rider.user_type,
+          is_rider_approved: rider.is_rider_approved,
+          profile_image: rider.profile_image,
+        },
+
+        request: {
+          id: updatedRequest._id,
+          status: updatedRequest.status,
+        },
+
+        email_sent: emailSent,
+      });
+
+    } catch (error) {
+      console.error(
+        "Existing user rider conversion error:",
+        error
+      );
+
+      const errorMessages = {
+        REQUEST_NOT_FOUND: [
+          404,
+          "Rider application not found.",
+        ],
+
+        ALREADY_CONVERTED: [
+          409,
+          "This application has already been converted.",
+        ],
+
+        REQUEST_NOT_APPROVED: [
+          409,
+          "Approve the application before converting the user.",
+        ],
+
+        EXISTING_USER_LINK_MISSING: [
+          409,
+          "This application is not linked to an existing user. It needs to be migrated.",
+        ],
+
+        EXISTING_USER_NOT_FOUND: [
+          404,
+          "The existing user account could not be found.",
+        ],
+
+        USER_EMAIL_MISMATCH: [
+          409,
+          "The application email does not match the linked user account.",
+        ],
+
+        USER_ACCOUNT_INACTIVE: [
+          403,
+          "The existing user account is inactive.",
+        ],
+
+        USER_ALREADY_RIDER: [
+          409,
+          "This user is already an approved rider.",
+        ],
+
+        USER_ROLE_NOT_ELIGIBLE: [
+          409,
+          "This user account is not eligible for rider conversion.",
+        ],
+
+        USER_CONVERSION_FAILED: [
+          409,
+          "Unable to update the existing user's role.",
+        ],
+
+        APPLICATION_UPDATE_FAILED: [
+          409,
+          "Unable to update the rider application.",
+        ],
+      };
+
+      const knownError = errorMessages[error.message];
+
+      if (knownError) {
+        return res.status(knownError[0]).json({
           status: "error",
-          message:
-            "An account with this email or username already exists.",
+          message: knownError[1],
         });
       }
 
       return res.status(500).json({
         status: "error",
-        message: "Unable to create the rider account.",
+        message: "Unable to convert the existing user into a rider.",
       });
+
+    } finally {
+      await session.endSession();
     }
   }
 );
+
 /* =========================================
    GOOGLE DRIVE CONFIGURATION
 ========================================= */

@@ -10,7 +10,6 @@ const userSchema = new mongoose.Schema(
     username: {
       type: String,
       required: true,
-      unique: true,
       trim: true,
       minlength: 6,
     },
@@ -48,7 +47,24 @@ const userSchema = new mongoose.Schema(
     user_type: {
       type: String,
       enum: ["user", "rider"],
+      default: "user",
       required: true,
+    },
+
+    // ========================================
+    // ACCOUNT STATUS
+    // ========================================
+
+    is_active: {
+      type: Boolean,
+      default: true,
+    },
+
+    // Increment this to invalidate existing JWT sessions.
+    token_version: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
 
     // ========================================
@@ -136,6 +152,12 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    rider_approved_at: {
+      type: Date,
+      default: null,
+    },
+
   },
   {
     timestamps: true,
@@ -158,7 +180,7 @@ userSchema.index(
   { unique: true }
 );
 
-// Unique phone, but allow multiple missing values
+// Unique phone, allowing missing values
 userSchema.index(
   { phone: 1 },
   {
@@ -167,7 +189,7 @@ userSchema.index(
   }
 );
 
-// Unique Google ID only when it is a string
+// Unique Google ID when present
 userSchema.index(
   { google_id: 1 },
   {
@@ -177,6 +199,12 @@ userSchema.index(
     },
   }
 );
+
+// Query accounts by role and status
+userSchema.index({
+  user_type: 1,
+  is_active: 1,
+});
 
 // ========================================
 // EXPORT MODEL
