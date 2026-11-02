@@ -2893,7 +2893,7 @@ if (existingUser) {
     // Update the user and application together.
     await session.withTransaction(async () => {
 
-      const convertedUser = await User.findOneAndUpdate(
+      convertedUser = await User.findOneAndUpdate(
   {
     _id: existingUser._id,
     user_type: "user",
@@ -2908,7 +2908,7 @@ if (existingUser) {
     },
   },
   {
-    new: true,
+    returnDocument: "after",
     runValidators: true,
     session,
   }
@@ -2932,10 +2932,10 @@ if (existingUser) {
           },
         },
         {
-          new: true,
-          runValidators: true,
-          session,
-        }
+  returnDocument: "after",
+  runValidators: true,
+  session,
+}
       );
 
       if (!updatedRequest) {
