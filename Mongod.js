@@ -2547,6 +2547,7 @@ app.get(
 // PATCH /admin/rider-requests/:requestId/status
 // ============================================
 
+
 app.patch(
   "/admin/rider-requests/:requestId/status",
   requireRiderManagementAccess,
@@ -2555,6 +2556,7 @@ app.patch(
       const { requestId } = req.params;
       const { status, rejection_reason } = req.body;
 
+      // 1. Validate request ID
       if (!mongoose.Types.ObjectId.isValid(requestId)) {
         return res.status(400).json({
           status: "error",
@@ -2562,6 +2564,7 @@ app.patch(
         });
       }
 
+      // 2. Validate status
       if (!["approved", "rejected"].includes(status)) {
         return res.status(400).json({
           status: "error",
@@ -2569,6 +2572,7 @@ app.patch(
         });
       }
 
+      // 3. Validate rejection reason
       if (
         status === "rejected" &&
         !String(rejection_reason || "").trim()
@@ -2579,8 +2583,7 @@ app.patch(
         });
       }
 
-      // Update only applications that have not already
-      // been approved, rejected, or converted into accounts.
+      // 4. Update application
       const updatedRequest = await BecomeRider.findOneAndUpdate(
         {
           _id: requestId,
@@ -2600,7 +2603,7 @@ app.patch(
           },
         },
         {
-          new: true,
+          returnDocument: "after",
           runValidators: true,
         }
       );
@@ -2618,19 +2621,146 @@ app.patch(
 
         return res.status(409).json({
           status: "error",
-          message:
-            `This request cannot be reviewed because its current status is "${existingRequest.status}".`,
+          message: `This request cannot be reviewed because its current status is "${existingRequest.status}".`,
         });
       }
 
+      // 5. Send rejection email only
+      let emailSent = null;
+
+      if (status === "rejected") {
+        emailSent = false;
+
+        try {
+          const applicantName =
+            `${updatedRequest.first_name || ""} ${
+              updatedRequest.last_name || ""
+            }`.trim() || "Applicant";
+
+          const safeName = escapeHtml(applicantName);
+          const safeReason = escapeHtml(
+            updatedRequest.rejection_reason
+          );
+
+          await sendEmail({
+            to: updatedRequest.email,
+
+            subject: "Update on Your DWJD Rider Application",
+
+            html: `
+              <!DOCTYPE html>
+              <html>
+                <body style="
+                  margin: 0;
+                  padding: 25px;
+                  background: #f4f6f8;
+                  font-family: Arial, sans-serif;
+                ">
+                  <div style="
+                    max-width: 600px;
+                    margin: auto;
+                    background: white;
+                    border-radius: 12px;
+                    overflow: hidden;
+                    border: 1px solid #e5e7eb;
+                  ">
+                    <div style="
+                      background: #111827;
+                      color: white;
+                      padding: 25px;
+                      text-align: center;
+                    ">
+                      <h1>DWJD</h1>
+                      <p>Rider Application Update</p>
+                    </div>
+
+                    <div style="padding: 30px;">
+                      <h2>Hello ${safeName},</h2>
+
+                      <p>
+                        Thank you for your interest in becoming
+                        a DWJD rider.
+                      </p>
+
+                      <p>
+                        After reviewing your application,
+                        we regret to inform you that your
+                        application has been rejected.
+                      </p>
+
+                      <div style="
+                        background: #fef2f2;
+                        border-left: 4px solid #dc2626;
+                        padding: 16px;
+                        margin: 20px 0;
+                      ">
+                        <h3 style="color: #b91c1c;">
+                          Reason for rejection
+                        </h3>
+
+                        <p style="
+                          color: #374151;
+                          line-height: 1.6;
+                        ">
+                          ${safeReason}
+                        </p>
+                      </div>
+
+                      <p>
+                        Thank you for considering DWJD.
+                        We appreciate your interest and
+                        wish you the best.
+                      </p>
+
+                      <p>
+                        Regards,<br />
+                        <strong>DWJD Customer Support Team</strong>
+                      </p>
+                    </div>
+
+                    <div style="
+                      background: #f9fafb;
+                      padding: 15px;
+                      text-align: center;
+                      color: #6b7280;
+                      font-size: 12px;
+                    ">
+                      This is an automated email from DWJD.
+                    </div>
+                  </div>
+                </body>
+              </html>
+            `,
+          });
+
+          emailSent = true;
+
+          console.log(
+            "Rider rejection email sent:",
+            updatedRequest.email
+          );
+        } catch (emailError) {
+          console.error(
+            "Rider rejection email failed:",
+            emailError.response?.data || emailError.message
+          );
+        }
+      }
+
+      // 6. Return success even if email delivery fails
       return res.status(200).json({
         status: "success",
         message:
           status === "approved"
             ? "Rider request approved successfully."
-            : "Rider request rejected successfully.",
+            : emailSent
+              ? "Rider request rejected and rejection email sent successfully."
+              : "Rider request rejected, but the rejection email could not be sent.",
+
+        email_sent: emailSent,
         request: updatedRequest,
       });
+
     } catch (error) {
       console.error("Review rider request error:", error);
 
