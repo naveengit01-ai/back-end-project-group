@@ -38,6 +38,7 @@ const allowedOrigins = [
   "https://dwjd-org.vercel.app",
   "http://localhost:5173",
   "http://192.168.1.12:5173",
+  "http://localhost:5174"
 ];
 
 // Allow preview deployments belonging to this Vercel project.
