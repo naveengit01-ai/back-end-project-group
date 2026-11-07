@@ -2756,146 +2756,174 @@ app.post("/admin/login", async (req, res) => {
   // RIDER MANAGEMENT AUTHORIZATION
   // ============================================
 
-  const requireRiderManagementAccess = async (req, res, next) => {
-    try {
-      const authorization = req.headers.authorization;
+  
+// ============================================
+// RIDER MANAGEMENT AUTHORIZATION
+// GM: Full access automatically
+// ADMIN: Requires create_rider responsibility
+// ============================================
 
-      if (!authorization?.startsWith("Bearer ")) {
-        return res.status(401).json({
-          status: "unauthorized",
-          message: "Please log in as an administrator.",
-        });
-      }
+const requireRiderManagementAccess = async (req, res, next) => {
+  try {
+    // 1. Check authorization header
+    const authorization = req.headers.authorization;
 
-      const token = authorization.slice(7).trim();
-
-      if (!token) {
-        return res.status(401).json({
-          status: "unauthorized",
-          message: "Authentication token is missing.",
-        });
-      }
-
-      const decoded = jwt.verify(
-        token,
-        process.env.JWT_SECRET
-      );
-
-      if (!decoded.id || decoded.admin !== true) {
-        return res.status(401).json({
-          status: "unauthorized",
-          message: "Invalid administrator session.",
-        });
-      }
-
-      const admin = await Admin.findById(decoded.id)
-        .select("-password -otp -otp_expiry")
-        .lean();
-
-      if (!admin) {
-        return res.status(401).json({
-          status: "unauthorized",
-          message: "Administrator account not found.",
-        });
-      }
-
-      if (!admin.is_active) {
-        return res.status(403).json({
-          status: "forbidden",
-          message: "Your administrator account is inactive.",
-        });
-      }
-
-      const roles = Array.isArray(admin.roles)
-        ? admin.roles.map((role) =>
-            String(role).toLowerCase()
-          )
-        : [];
-
-      const userType = String(
-        admin.user_type || ""
-      ).toLowerCase();
-
-      const permitted =
-        userType === "gm" ||
-        roles.includes("gm") ||
-        roles.includes("customersupport");
-
-      if (!permitted) {
-        return res.status(403).json({
-          status: "forbidden",
-          message:
-            "You do not have permission to manage rider requests.",
-        });
-      }
-
-      req.riderManager = {
-        id: String(admin._id),
-        username: admin.username,
-        roles,
-        userType,
-      };
-
-      return next();
-    } catch (error) {
-      if (
-        error.name === "JsonWebTokenError" ||
-        error.name === "TokenExpiredError" ||
-        error.name === "NotBeforeError"
-      ) {
-        return res.status(401).json({
-          status: "unauthorized",
-          message: "Your session is invalid or has expired.",
-        });
-      }
-
-      console.error("Rider authorization error:", error);
-
-      return res.status(500).json({
-        status: "error",
-        message: "Unable to verify administrator permissions.",
+    if (!authorization?.startsWith("Bearer ")) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Please log in as an administrator.",
       });
     }
-  };
+
+    // 2. Extract token
+    const token = authorization.slice(7).trim();
+
+    if (!token) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Authentication token is missing.",
+      });
+    }
+
+    // 3. Verify JWT
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
+
+    if (!decoded.id || decoded.admin !== true) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Invalid administrator session.",
+      });
+    }
+
+    // 4. Fetch current admin from MongoDB
+    const admin = await Admin.findById(decoded.id)
+      .select("-password -otp -otp_expiry")
+      .lean();
+
+    if (!admin) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Administrator account not found.",
+      });
+    }
+
+    // 5. Check account status
+    if (!admin.is_active) {
+      return res.status(403).json({
+        status: "forbidden",
+        message: "Your administrator account is inactive.",
+      });
+    }
+
+    if (!admin.is_verified) {
+      return res.status(403).json({
+        status: "forbidden",
+        message: "Your administrator account is not verified.",
+      });
+    }
+
+    // 6. Read NEW role and responsibilities
+    const role = String(admin.role || "").toLowerCase();
+
+    const responsibilities = Array.isArray(admin.responsibilities)
+      ? admin.responsibilities
+      : [];
+
+    // 7. Check permissions
+    // GM automatically has full access.
+    const isGM = role === "gm";
+
+    // Normal Admin needs create_rider responsibility.
+    const canManageRiders =
+      role === "admin" &&
+      responsibilities.includes("create_rider");
+
+    if (!isGM && !canManageRiders) {
+      return res.status(403).json({
+        status: "forbidden",
+        message: "You do not have permission to manage rider requests.",
+      });
+    }
+
+    // 8. Store authenticated administrator details
+    req.riderManager = {
+      id: String(admin._id),
+      username: admin.username,
+      user_type: admin.user_type,
+      role: admin.role,
+      responsibilities,
+    };
+
+    console.log("========== RIDER MANAGEMENT ACCESS ==========");
+    console.log("Admin:", admin.username);
+    console.log("Role:", role);
+    console.log("Responsibilities:", responsibilities);
+    console.log("Access granted:", true);
+
+    return next();
+
+  } catch (error) {
+    if (
+      error.name === "JsonWebTokenError" ||
+      error.name === "TokenExpiredError" ||
+      error.name === "NotBeforeError"
+    ) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Your session is invalid or has expired.",
+      });
+    }
+
+    console.error("Rider authorization error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to verify administrator permissions.",
+    });
+  }
+};
 
   // ============================================
   // GET RIDER REQUESTS
   // GET /admin/rider-requests
   // ============================================
 
-  app.get(
-    "/admin/rider-requests",
-    requireRiderManagementAccess,
-    async (req, res) => {
-      try {
-        const requests = await BecomeRider.find({})
-          .populate(
-            "reviewed_by",
-            "username first_name last_name"
-          )
-          .populate(
-            "created_user_id",
-            "first_name last_name email user_type"
-          )
-          .sort({ createdAt: -1 })
-          .lean();
+app.get(
+  "/admin/rider-requests",
+  requireRiderManagementAccess,
+  async (req, res) => {
+    try {
+      const requests = await BecomeRider.find({})
+        .populate(
+          "reviewed_by",
+          "username first_name last_name"
+        )
+        .populate(
+          "created_user_id",
+          "first_name last_name email user_type"
+        )
+        .sort({ createdAt: -1 })
+        .lean();
 
-        return res.status(200).json({
-          status: "success",
-          message: "Rider requests retrieved successfully.",
-          count: requests.length,
-          requests,
-        });
-      } catch (error) {
-        console.error("Get rider requests error:", error);
+      return res.status(200).json({
+        status: "success",
+        message: "Rider requests retrieved successfully.",
+        count: requests.length,
+        requests,
+      });
+    } catch (error) {
+      console.error("Get rider requests error:", error);
 
-        return res.status(500).json({
-          status: "error",
-          message: "Unable to retrieve rider requests.",
-        });
-      }
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to retrieve rider requests.",
+      });
     }
-  );
+  }
+);
 
   // ============================================
   // REVIEW RIDER REQUEST
