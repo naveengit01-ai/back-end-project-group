@@ -23,6 +23,16 @@ const OAuthLoginCode = require("./models/OAuthLoginCode");
 const cookieParser = require("cookie-parser");
 /* ================= MIDDLEWARE ================= */
 
+const ALLOWED_ADMIN_ROLES = [
+  "gm",
+  "admin",
+];
+
+const ALLOWED_RESPONSIBILITIES = [
+  "create_promotion",
+  "create_rider",
+];
+
 const googleOAuthClient = new google.auth.OAuth2(
   process.env.GOOGLE_OAUTH_CLIENT_ID,
   process.env.GOOGLE_OAUTH_CLIENT_SECRET,
@@ -154,7 +164,13 @@ const requireGMForReports = async (req, res, next) => {
     const admin = await Admin.findById(decoded.id)
       .select("-password -otp -otp_expiry")
       .lean();
-
+      console.log("========== ADMIN AUTH DEBUG ==========");
+console.log("Decoded ID:", decoded.id);
+console.log("Admin found:", !!admin);
+console.log("MongoDB role:", admin?.role);
+console.log("MongoDB user_type:", admin?.user_type);
+console.log("MongoDB responsibilities:", admin?.responsibilities);
+console.log("======================================");
     if (!admin) {
       return res.status(401).json({
         status: "unauthorized",
@@ -220,8 +236,10 @@ const requireGMForReports = async (req, res, next) => {
    Used by admin advertisement management APIs
 ============================================ */
 
+
 const requireAdmin = async (req, res, next) => {
   try {
+    // 1. Check authorization header
     const authorization = req.headers.authorization;
 
     if (!authorization || !authorization.startsWith("Bearer ")) {
@@ -231,19 +249,15 @@ const requireAdmin = async (req, res, next) => {
       });
     }
 
-    const token = authorization.slice(7).trim();
+    // 2. Extract token
+    const token = authorization.split(" ")[1];
 
-    if (!token) {
-      return res.status(401).json({
-        status: "unauthorized",
-        message: "Authentication token is missing.",
-      });
-    }
+    // 3. Verify JWT
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
 
-    // Verify the JWT using the same secret as admin login.
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // Your /admin/login API creates tokens with admin: true.
     if (!decoded.id || decoded.admin !== true) {
       return res.status(403).json({
         status: "forbidden",
@@ -251,7 +265,7 @@ const requireAdmin = async (req, res, next) => {
       });
     }
 
-    // Verify that the admin still exists in MongoDB.
+    // 4. Fetch current admin from MongoDB
     const admin = await Admin.findById(decoded.id)
       .select("-password -otp -otp_expiry")
       .lean();
@@ -263,22 +277,51 @@ const requireAdmin = async (req, res, next) => {
       });
     }
 
+    // 5. Check account status
     if (!admin.is_active) {
       return res.status(403).json({
-        status: "forbidden",
+        status: "account_inactive",
         message: "Your administrator account is inactive.",
       });
     }
 
-    // Store authenticated administrator information.
+    if (!admin.is_verified) {
+      return res.status(403).json({
+        status: "account_unverified",
+        message: "Your administrator account is not verified.",
+      });
+    }
+
+    // 6. Assign NEW admin structure
     req.admin = {
       id: String(admin._id),
       username: admin.username,
-      roles: Array.isArray(admin.roles) ? admin.roles : [],
+      email: admin.email,
+
       user_type: admin.user_type,
+
+      // NEW ROLE FIELD
+      role: admin.role,
+
+      // NEW RESPONSIBILITIES FIELD
+      responsibilities: Array.isArray(admin.responsibilities)
+        ? admin.responsibilities
+        : [],
+
+      is_active: admin.is_active,
+      is_verified: admin.is_verified,
     };
 
+    // 7. Debug
+    console.log("========== ADMIN AUTH DEBUG ==========");
+    console.log("Admin ID:", req.admin.id);
+    console.log("Username:", req.admin.username);
+    console.log("Role:", req.admin.role);
+    console.log("Responsibilities:", req.admin.responsibilities);
+    console.log("======================================");
+
     return next();
+
   } catch (error) {
     if (
       error.name === "TokenExpiredError" ||
@@ -287,7 +330,7 @@ const requireAdmin = async (req, res, next) => {
     ) {
       return res.status(401).json({
         status: "unauthorized",
-        message: "Your session is invalid or has expired.",
+        message: "Invalid or expired authentication token.",
       });
     }
 
@@ -295,10 +338,11 @@ const requireAdmin = async (req, res, next) => {
 
     return res.status(500).json({
       status: "error",
-      message: "Unable to verify administrator access.",
+      message: "Admin authentication failed.",
     });
   }
 };
+
 /* ================= UTIL ================= */
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
@@ -1871,201 +1915,415 @@ function escapeHtml(value = "") {
     return entities[character];
   });
 }
+
 /* =================================================
    CREATE ADMIN ACCOUNT API
+   ONLY GENERAL MANAGER CAN CREATE ADMIN ACCOUNTS
 ================================================= */
 
-app.post("/admin/create-admin", async (req, res) => {
-  try {
-    const {
-      username,
-      email,
-      first_name,
-      last_name,
-      phone,
-      roles,
-    } = req.body;
+app.post(
+  "/admin/create-admin",
+  requireAdmin,
+  async (req, res) => {
+    let newAdmin = null;
 
-    // 1. Validate required fields
-    if (
-      !username?.trim() ||
-      !email?.trim() ||
-      !first_name?.trim() ||
-      !last_name?.trim() ||
-      !phone?.trim() ||
-      !Array.isArray(roles) ||
-      roles.length === 0
-    ) {
-      return res.status(400).json({
-        status: "missing_fields",
-        message: "Please provide all required fields and at least one role.",
-      });
-    }
-
-    // 2. Normalize input
-    const normalizedUsername = username.trim();
-    const normalizedEmail = email.trim().toLowerCase();
-    const normalizedPhone = phone.trim();
-
-    // 3. Validate email
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    if (!emailRegex.test(normalizedEmail)) {
-      return res.status(400).json({
-        status: "invalid_email",
-        message: "Please enter a valid email address.",
-      });
-    }
-
-    // 4. Validate roles
-    const allowedRoles = [
-      "gm",
-      "customersupport",
-      "marketing",
-      "finance",
-      "operations",
-      "hr",
-      "admin",
-    ];
-
-    const uniqueRoles = [...new Set(roles)];
-
-    if (
-      uniqueRoles.length !== roles.length ||
-      uniqueRoles.some((role) => !allowedRoles.includes(role))
-    ) {
-      return res.status(400).json({
-        status: "invalid_roles",
-        message: "One or more selected roles are invalid.",
-      });
-    }
-
-    // 5. Check duplicate username, email, or phone
-    const existingAdmin = await Admin.findOne({
-      $or: [
-        { username: normalizedUsername },
-        { email: normalizedEmail },
-        { phone: normalizedPhone },
-      ],
-    });
-
-    if (existingAdmin) {
-      let message = "An admin account already exists.";
-
-      if (existingAdmin.username === normalizedUsername) {
-        message = "Username already exists.";
-      } else if (existingAdmin.email === normalizedEmail) {
-        message = "Email already exists.";
-      } else if (existingAdmin.phone === normalizedPhone) {
-        message = "Phone number already exists.";
+    try {
+      // ============================================
+      // 1. VERIFY GENERAL MANAGER
+      // ============================================
+      console.log("========== CREATE ADMIN DEBUG ==========");
+console.log("Authenticated Admin:", req.admin);
+console.log("Authenticated Role:", req.admin?.role);
+console.log("Is GM:", req.admin?.role === "gm");
+console.log("========================================");
+      if (!req.admin || req.admin.role !== "gm") {
+        return res.status(403).json({
+          status: "permission_denied",
+          message: "Only the General Manager can create admin accounts.",
+        });
       }
 
-      return res.status(409).json({
-        status: "admin_exists",
-        message,
+      // ============================================
+      // 2. GET REQUEST BODY
+      // ============================================
+
+      const {
+        username,
+        email,
+        first_name,
+        last_name,
+        phone,
+        role,
+        responsibilities = [],
+      } = req.body;
+
+      // ============================================
+      // 3. VALIDATE REQUIRED FIELDS
+      // ============================================
+
+      if (
+        typeof username !== "string" ||
+        typeof email !== "string" ||
+        typeof first_name !== "string" ||
+        typeof last_name !== "string" ||
+        typeof phone !== "string" ||
+        !username.trim() ||
+        !email.trim() ||
+        !first_name.trim() ||
+        !last_name.trim() ||
+        !phone.trim()
+      ) {
+        return res.status(400).json({
+          status: "missing_fields",
+          message: "Please provide all required personal information.",
+        });
+      }
+
+      // ============================================
+      // 4. VALIDATE ACCOUNT ROLE
+      // ============================================
+
+      if (!ALLOWED_ADMIN_ROLES.includes(role)) {
+        return res.status(400).json({
+          status: "invalid_role",
+          message: "Select a valid account role.",
+        });
+      }
+
+      // ============================================
+      // 5. VALIDATE RESPONSIBILITIES
+      // ============================================
+
+      if (!Array.isArray(responsibilities)) {
+        return res.status(400).json({
+          status: "invalid_responsibilities",
+          message: "Responsibilities must be an array.",
+        });
+      }
+
+      const uniqueResponsibilities = [
+        ...new Set(responsibilities),
+      ];
+
+      if (
+        uniqueResponsibilities.length !== responsibilities.length ||
+        uniqueResponsibilities.some(
+          (item) => !ALLOWED_RESPONSIBILITIES.includes(item)
+        )
+      ) {
+        return res.status(400).json({
+          status: "invalid_responsibilities",
+          message: "One or more responsibilities are invalid.",
+        });
+      }
+
+      // GM gets all responsibilities automatically.
+      if (
+        role === "gm" &&
+        uniqueResponsibilities.length > 0
+      ) {
+        return res.status(400).json({
+          status: "invalid_responsibilities",
+          message: "GM receives all responsibilities automatically.",
+        });
+      }
+
+      // Admin must receive at least one responsibility.
+      if (
+        role === "admin" &&
+        uniqueResponsibilities.length === 0
+      ) {
+        return res.status(400).json({
+          status: "missing_responsibilities",
+          message: "Assign at least one responsibility to this admin.",
+        });
+      }
+
+      // ============================================
+      // 6. NORMALIZE INPUT
+      // ============================================
+
+      const normalizedUsername = username.trim();
+      const normalizedEmail = email.trim().toLowerCase();
+      const normalizedFirstName = first_name.trim();
+      const normalizedLastName = last_name.trim();
+      const normalizedPhone = phone.trim();
+
+      // ============================================
+      // 7. VALIDATE EMAIL
+      // ============================================
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      if (!emailRegex.test(normalizedEmail)) {
+        return res.status(400).json({
+          status: "invalid_email",
+          message: "Please enter a valid email address.",
+        });
+      }
+
+      // ============================================
+      // 8. VALIDATE PHONE
+      // ============================================
+
+      const normalizedPhoneDigits = normalizedPhone.replace(
+        /[\s()-]/g,
+        ""
+      );
+
+      if (!/^\+?\d{10,15}$/.test(normalizedPhoneDigits)) {
+        return res.status(400).json({
+          status: "invalid_phone",
+          message: "Please enter a valid phone number.",
+        });
+      }
+
+      // ============================================
+      // 9. CHECK DUPLICATE ACCOUNTS
+      // ============================================
+
+      const existingAdmin = await Admin.findOne({
+        $or: [
+          { username: normalizedUsername },
+          { email: normalizedEmail },
+          { phone: normalizedPhone },
+        ],
       });
-    }
 
-    // 6. Generate a temporary password
-    const temporaryPassword = crypto.randomBytes(12).toString("base64url");
+      if (existingAdmin) {
+        let message = "An administrator account already exists.";
 
-    // 7. Hash the password before storing it
-    const hashedPassword = await bcrypt.hash(temporaryPassword, 12);
+        if (existingAdmin.username === normalizedUsername) {
+          message = "Username already exists.";
+        } else if (existingAdmin.email === normalizedEmail) {
+          message = "Email address already exists.";
+        } else if (existingAdmin.phone === normalizedPhone) {
+          message = "Phone number already exists.";
+        }
 
-    // 8. Create admin account
-    const newAdmin = await Admin.create({
-      username: normalizedUsername,
-      email: normalizedEmail,
-      first_name: first_name.trim(),
-      last_name: last_name.trim(),
-      phone: normalizedPhone,
-      password: hashedPassword,
-      user_type: "admin",
-      roles: uniqueRoles,
-      profile_image: "",
-      is_verified: true,
-      is_active: true,
-    });
+        return res.status(409).json({
+          status: "admin_exists",
+          message,
+        });
+      }
 
-    // 9. Send credentials using your existing Brevo email function
-    try {
-      await sendEmail({
-        to: normalizedEmail,
-        subject: "Your DWJD Admin Account Credentials",
-        html: `
-          <!DOCTYPE html>
-          <html>
-          <body style="font-family: Arial, sans-serif; padding: 20px;">
-            <h2>Welcome to DWJD Admin</h2>
+      // ============================================
+      // 10. GENERATE TEMPORARY PASSWORD
+      // ============================================
 
-            <p>Hello ${escapeHtml(first_name.trim())},</p>
+      const temporaryPassword = crypto
+        .randomBytes(18)
+        .toString("base64url");
 
-            <p>Your admin account has been created successfully.</p>
+      // ============================================
+      // 11. HASH PASSWORD
+      // ============================================
 
-            <p><strong>Username:</strong>
-              ${escapeHtml(normalizedUsername)}
-            </p>
+      const hashedPassword = await bcrypt.hash(
+        temporaryPassword,
+        12
+      );
 
-            <p><strong>Temporary Password:</strong>
-              ${escapeHtml(temporaryPassword)}
-            </p>
+      // ============================================
+      // 12. CREATE ADMIN ACCOUNT
+      // ============================================
 
-            <p><strong>Assigned Roles:</strong>
-              ${uniqueRoles.map(escapeHtml).join(", ")}
-            </p>
+      newAdmin = await Admin.create({
+        username: normalizedUsername,
+        email: normalizedEmail,
+        first_name: normalizedFirstName,
+        last_name: normalizedLastName,
+        phone: normalizedPhone,
 
-            <p>Please log in and change your temporary password.</p>
+        password: hashedPassword,
 
-            <p>Regards,<br />DWJD Team</p>
-          </body>
-          </html>
-        `,
+        user_type: "admin",
+        role: role,
+
+        responsibilities:
+          role === "gm"
+            ? []
+            : uniqueResponsibilities,
+
+        profile_image: "",
+
+        must_change_password: true,
+        is_verified: true,
+        is_active: true,
+
+        otp: null,
+        otp_expiry: null,
       });
+
+      // ============================================
+      // 13. PREPARE RESPONSIBILITY NAMES
+      // ============================================
+
+      const responsibilityNames = {
+        create_promotion: "Create Promotion",
+        create_rider: "Create Rider",
+      };
+
+      const assignedResponsibilities =
+        role === "gm"
+          ? ["All DWJD responsibilities"]
+          : uniqueResponsibilities.map(
+              (item) => responsibilityNames[item]
+            );
+
+      // ============================================
+      // 14. SEND LOGIN CREDENTIALS
+      // ============================================
+
+      try {
+        await sendEmail({
+          to: normalizedEmail,
+
+          subject: "Your DWJD Admin Account Credentials",
+
+          html: `
+            <!DOCTYPE html>
+            <html>
+              <body style="
+                font-family: Arial, sans-serif;
+                padding: 24px;
+                color: #1e293b;
+              ">
+
+                <h2>Welcome to DWJD Administration</h2>
+
+                <p>Hello ${escapeHtml(normalizedFirstName)},</p>
+
+                <p>
+                  Your DWJD administrator account has been
+                  created successfully.
+                </p>
+
+                <p>
+                  <strong>Username:</strong>
+                  ${escapeHtml(normalizedUsername)}
+                </p>
+
+                <p>
+                  <strong>Temporary Password:</strong>
+                  ${escapeHtml(temporaryPassword)}
+                </p>
+
+                <p>
+                  <strong>Account Role:</strong>
+                  ${escapeHtml(role.toUpperCase())}
+                </p>
+
+                <p>
+                  <strong>Assigned Responsibilities:</strong>
+                  ${assignedResponsibilities
+                    .map(escapeHtml)
+                    .join(", ")}
+                </p>
+
+                <p>
+                  Please log in using these credentials
+                  and change your temporary password immediately.
+                </p>
+
+                <p>
+                  Regards,<br />
+                  DWJD Team
+                </p>
+
+              </body>
+            </html>
+          `,
+        });
+
+      } catch (emailError) {
+        console.error(
+          "Admin credentials email failed:",
+          emailError
+        );
+
+        // Remove account if credentials could not be sent.
+        await Admin.deleteOne({
+          _id: newAdmin._id,
+        });
+
+        return res.status(502).json({
+          status: "email_failed",
+          message:
+            "The credentials email could not be sent. The admin account was not created. Please try again.",
+          email_sent: false,
+        });
+      }
+
+      // ============================================
+      // 15. SUCCESS RESPONSE
+      // ============================================
 
       return res.status(201).json({
         status: "admin_created",
-        message: "Admin account created and credentials sent successfully.",
+
+        message:
+          "Admin account created and credentials sent successfully.",
+
         email_sent: true,
+
         admin: {
           id: newAdmin._id,
           username: newAdmin.username,
           email: newAdmin.email,
           first_name: newAdmin.first_name,
           last_name: newAdmin.last_name,
-          roles: newAdmin.roles,
+
+          role: newAdmin.role,
+
+          responsibilities: newAdmin.responsibilities,
+
+          must_change_password:
+            newAdmin.must_change_password,
+
+          is_active: newAdmin.is_active,
+          is_verified: newAdmin.is_verified,
         },
       });
-    } catch (emailError) {
-      console.error("Admin credentials email failed:", emailError.message);
 
-      return res.status(201).json({
-        status: "admin_created_email_failed",
-        message:
-          "Admin account was created, but the credentials email could not be sent. Arrange a secure password reset before allowing login.",
-        email_sent: false,
-        admin: {
-          id: newAdmin._id,
-          username: newAdmin.username,
-          email: newAdmin.email,
-        },
+    } catch (error) {
+      console.error("Create admin error:", error);
+
+      // ============================================
+      // 16. DUPLICATE KEY ERROR
+      // ============================================
+
+      if (error.code === 11000) {
+        return res.status(409).json({
+          status: "admin_exists",
+          message:
+            "Username, email, or phone number already exists.",
+        });
+      }
+
+      // ============================================
+      // 17. MONGOOSE VALIDATION ERROR
+      // ============================================
+
+      if (error.name === "ValidationError") {
+        return res.status(400).json({
+          status: "validation_error",
+          message: error.message,
+        });
+      }
+
+      // ============================================
+      // 18. SERVER ERROR
+      // ============================================
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to create admin account.",
       });
     }
-  } catch (error) {
-    console.error("Create admin error:", error);
-
-    if (error.code === 11000) {
-      return res.status(409).json({
-        status: "admin_exists",
-        message: "Username, email, or phone number already exists.",
-      });
-    }
-
-    return res.status(500).json({
-      status: "error",
-      message: "Unable to create admin account.",
-    });
   }
-});
+);
+
 
 /* ============================================
    GET ALL ADMIN ACCOUNTS
