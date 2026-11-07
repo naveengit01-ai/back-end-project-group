@@ -164,13 +164,6 @@ const requireGMForReports = async (req, res, next) => {
     const admin = await Admin.findById(decoded.id)
       .select("-password -otp -otp_expiry")
       .lean();
-      console.log("========== ADMIN AUTH DEBUG ==========");
-console.log("Decoded ID:", decoded.id);
-console.log("Admin found:", !!admin);
-console.log("MongoDB role:", admin?.role);
-console.log("MongoDB user_type:", admin?.user_type);
-console.log("MongoDB responsibilities:", admin?.responsibilities);
-console.log("======================================");
     if (!admin) {
       return res.status(401).json({
         status: "unauthorized",
@@ -312,13 +305,6 @@ const requireAdmin = async (req, res, next) => {
       is_verified: admin.is_verified,
     };
 
-    // 7. Debug
-    console.log("========== ADMIN AUTH DEBUG ==========");
-    console.log("Admin ID:", req.admin.id);
-    console.log("Username:", req.admin.username);
-    console.log("Role:", req.admin.role);
-    console.log("Responsibilities:", req.admin.responsibilities);
-    console.log("======================================");
 
     return next();
 
