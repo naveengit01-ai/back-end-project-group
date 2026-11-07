@@ -1,3 +1,4 @@
+
 const mongoose = require("mongoose");
 
 const ALLOWED_ADMIN_ROLES = [
@@ -30,6 +31,7 @@ const adminSchema = new mongoose.Schema(
     password: {
       type: String,
       required: true,
+      select: false,
     },
 
     first_name: {
@@ -78,7 +80,9 @@ const adminSchema = new mongoose.Schema(
             Array.isArray(roles) &&
             roles.length > 0 &&
             new Set(roles).size === roles.length &&
-            roles.every((role) => ALLOWED_ADMIN_ROLES.includes(role))
+            roles.every((role) =>
+              ALLOWED_ADMIN_ROLES.includes(role)
+            )
           );
         },
         message:
@@ -104,11 +108,13 @@ const adminSchema = new mongoose.Schema(
     otp: {
       type: String,
       default: null,
+      select: false,
     },
 
     otp_expiry: {
       type: Date,
       default: null,
+      select: false,
     },
   },
   {

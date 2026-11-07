@@ -1194,27 +1194,62 @@ app.get("/advertisements", async (req, res) => {
   }
 });
 
-
 app.post("/admin/login", async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    if (!username || !password) {
+    // 1. Validate input
+    if (
+      typeof username !== "string" ||
+      typeof password !== "string" ||
+      !username.trim() ||
+      !password
+    ) {
       return res.status(400).json({
         status: "missing_fields",
-        message: "Username and password are required"
+        message: "Username and password are required",
       });
     }
 
-    const admin = await Admin.findOne({ username });
+    // 2. Check JWT secret
+    if (!process.env.JWT_SECRET) {
+      console.error("JWT_SECRET is missing in environment variables");
+
+      return res.status(500).json({
+        status: "server_configuration_error",
+        message: "Server configuration error",
+      });
+    }
+
+    // 3. Find admin and explicitly retrieve password
+    const admin = await Admin.findOne({
+      username: username.trim(),
+    }).select("+password");
 
     if (!admin) {
       return res.status(401).json({
         status: "invalid_credentials",
-        message: "Invalid username or password"
+        message: "Invalid username or password",
       });
     }
 
+    // 4. Check password hash availability
+    if (
+      typeof admin.password !== "string" ||
+      !/^\$2[aby]\$/.test(admin.password)
+    ) {
+      console.error(
+        "Admin password hash is missing or is not a bcrypt hash:",
+        admin._id
+      );
+
+      return res.status(500).json({
+        status: "password_configuration_error",
+        message: "Unable to verify admin credentials",
+      });
+    }
+
+    // 5. Compare password
     const passwordMatch = await bcrypt.compare(
       password,
       admin.password
@@ -1223,40 +1258,53 @@ app.post("/admin/login", async (req, res) => {
     if (!passwordMatch) {
       return res.status(401).json({
         status: "invalid_credentials",
-        message: "Invalid username or password"
+        message: "Invalid username or password",
       });
     }
 
+    // 6. Check account status
     if (!admin.is_active) {
       return res.status(403).json({
         status: "account_inactive",
-        message: "Admin account is inactive"
+        message: "Admin account is inactive",
       });
     }
 
+    // 7. Check verification
     if (!admin.is_verified) {
       return res.status(403).json({
         status: "otp_required",
-        email: admin.email
+        message: "Admin verification is required",
+        email: admin.email,
       });
     }
 
-    // Generate administrator JWT
+    // 8. Validate roles
+    const adminRoles = Array.isArray(admin.roles)
+      ? admin.roles
+      : [];
+
+    // 9. Generate JWT token
     const token = jwt.sign(
       {
-        id: admin._id,
+        id: admin._id.toString(),
         admin: true,
         role: admin.user_type,
-        roles: Array.isArray(admin.roles) ? admin.roles : []
+        roles: adminRoles,
       },
       process.env.JWT_SECRET,
-      { expiresIn: "7d" }
+      {
+        expiresIn: "7d",
+      }
     );
 
+    // 10. Successful login
     return res.status(200).json({
       status: "login_success",
       message: "Admin login successful",
+
       token,
+
       admin: {
         id: admin._id,
         username: admin.username,
@@ -1265,23 +1313,25 @@ app.post("/admin/login", async (req, res) => {
         last_name: admin.last_name,
         phone: admin.phone,
         profile_image: admin.profile_image,
-        user_type: admin.user_type,
-        roles: admin.roles || [],
-        is_verified: admin.is_verified,
-        is_active: admin.is_active
-      }
-    });
 
+        user_type: admin.user_type,
+        roles: adminRoles,
+
+        must_change_password: admin.must_change_password,
+
+        is_verified: admin.is_verified,
+        is_active: admin.is_active,
+      },
+    });
   } catch (error) {
     console.error("Admin login error:", error);
 
     return res.status(500).json({
       status: "error",
-      message: "Server error"
+      message: "Server error during admin login",
     });
   }
 });
-
 
 app.post("/admin/create-rider", async (req, res) => {
   try {
