@@ -34,12 +34,11 @@ const googleOAuthClient = new google.auth.OAuth2(
 
 // Permanent frontend domains
 const allowedOrigins = [
-  "https://dwjd.vercel.app",
+  "https://www.dwjd.online",
   "https://dwjd-org.vercel.app",
   "http://localhost:5173",
   "http://192.168.1.12:5173",
-  "http://localhost:5174",
-  "https://www.dwjd.online"
+  "http://localhost:5174"
 ];
 
 // Allow preview deployments belonging to this Vercel project.
