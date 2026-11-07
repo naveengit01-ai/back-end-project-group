@@ -1228,144 +1228,198 @@ console.log("Admin collection:", Admin.collection.name);
     }
   });
 
-  app.post("/admin/login", async (req, res) => {
-    try {
-      const { username, password } = req.body;
 
-      // 1. Validate input
-      if (
-        typeof username !== "string" ||
-        typeof password !== "string" ||
-        !username.trim() ||
-        !password
-      ) {
-        return res.status(400).json({
-          status: "missing_fields",
-          message: "Username and password are required",
-        });
-      }
+app.post("/admin/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
 
-      // 2. Check JWT secret
-      if (!process.env.JWT_SECRET) {
-        console.error("JWT_SECRET is missing in environment variables");
-
-        return res.status(500).json({
-          status: "server_configuration_error",
-          message: "Server configuration error",
-        });
-      }
-
-      // 3. Find admin and explicitly retrieve password
-      const admin = await Admin.findOne({
-        username: username.trim(),
-      }).select("+password");
-
-      if (!admin) {
-        return res.status(401).json({
-          status: "invalid_credentials",
-          message: "Invalid username or password",
-        });
-      }
-
-      // 4. Check password hash availability
-      if (
-        typeof admin.password !== "string" ||
-        !/^\$2[aby]\$/.test(admin.password)
-      ) {
-        console.error(
-          "Admin password hash is missing or is not a bcrypt hash:",
-          admin._id
-        );
-
-        return res.status(500).json({
-          status: "password_configuration_error",
-          message: "Unable to verify admin credentials",
-        });
-      }
-
-      // 5. Compare password
-      const passwordMatch = await bcrypt.compare(
-        password,
-        admin.password
-      );
-
-      if (!passwordMatch) {
-        return res.status(401).json({
-          status: "invalid_credentials",
-          message: "Invalid username or password",
-        });
-      }
-
-      // 6. Check account status
-      if (!admin.is_active) {
-        return res.status(403).json({
-          status: "account_inactive",
-          message: "Admin account is inactive",
-        });
-      }
-
-      // 7. Check verification
-      if (!admin.is_verified) {
-        return res.status(403).json({
-          status: "otp_required",
-          message: "Admin verification is required",
-          email: admin.email,
-        });
-      }
-
-      // 8. Validate roles
-      const adminRoles = Array.isArray(admin.roles)
-        ? admin.roles
-        : [];
-
-      // 9. Generate JWT token
-      const token = jwt.sign(
-        {
-          id: admin._id.toString(),
-          admin: true,
-          role: admin.user_type,
-          roles: adminRoles,
-        },
-        process.env.JWT_SECRET,
-        {
-          expiresIn: "7d",
-        }
-      );
-
-      // 10. Successful login
-      return res.status(200).json({
-        status: "login_success",
-        message: "Admin login successful",
-
-        token,
-
-        admin: {
-          id: admin._id,
-          username: admin.username,
-          email: admin.email,
-          first_name: admin.first_name,
-          last_name: admin.last_name,
-          phone: admin.phone,
-          profile_image: admin.profile_image,
-
-          user_type: admin.user_type,
-          roles: adminRoles,
-
-          must_change_password: admin.must_change_password,
-
-          is_verified: admin.is_verified,
-          is_active: admin.is_active,
-        },
-      });
-    } catch (error) {
-      console.error("Admin login error:", error);
-
-      return res.status(500).json({
-        status: "error",
-        message: "Server error during admin login",
+    // 1. Validate input
+    if (
+      typeof username !== "string" ||
+      typeof password !== "string" ||
+      !username.trim() ||
+      !password
+    ) {
+      return res.status(400).json({
+        status: "missing_fields",
+        message: "Username and password are required",
       });
     }
-  });
+
+    // 2. Check JWT secret
+    if (!process.env.JWT_SECRET) {
+      console.error("JWT_SECRET is missing in environment variables");
+
+      return res.status(500).json({
+        status: "server_configuration_error",
+        message: "Server configuration error",
+      });
+    }
+
+    // 3. Find admin and explicitly retrieve password
+    const admin = await Admin.findOne({
+      username: username.trim(),
+    }).select("+password");
+
+    if (!admin) {
+      return res.status(401).json({
+        status: "invalid_credentials",
+        message: "Invalid username or password",
+      });
+    }
+
+    // 4. Check password hash availability
+    if (
+      typeof admin.password !== "string" ||
+      !/^\$2[aby]\$/.test(admin.password)
+    ) {
+      console.error(
+        "Admin password hash is missing or is not a bcrypt hash:",
+        admin._id
+      );
+
+      return res.status(500).json({
+        status: "password_configuration_error",
+        message: "Unable to verify admin credentials",
+      });
+    }
+
+    // 5. Compare password
+    const passwordMatch = await bcrypt.compare(
+      password,
+      admin.password
+    );
+
+    if (!passwordMatch) {
+      return res.status(401).json({
+        status: "invalid_credentials",
+        message: "Invalid username or password",
+      });
+    }
+
+    // 6. Check account status
+    if (!admin.is_active) {
+      return res.status(403).json({
+        status: "account_inactive",
+        message: "Admin account is inactive",
+      });
+    }
+
+    // 7. Check verification
+    if (!admin.is_verified) {
+      return res.status(403).json({
+        status: "otp_required",
+        message: "Admin verification is required",
+        email: admin.email,
+      });
+    }
+
+    // 8. Validate new role structure
+    const allowedRoles = ["gm", "admin"];
+    const allowedResponsibilities = [
+      "create_promotion",
+      "create_rider",
+    ];
+
+    if (
+      admin.user_type !== "admin" ||
+      !allowedRoles.includes(admin.role)
+    ) {
+      console.error("Invalid admin account role:", {
+        id: admin._id,
+        user_type: admin.user_type,
+        role: admin.role,
+      });
+
+      return res.status(403).json({
+        status: "invalid_admin_role",
+        message: "Administrator account configuration is invalid",
+      });
+    }
+
+    const responsibilities = Array.isArray(admin.responsibilities)
+      ? admin.responsibilities
+      : [];
+
+    const hasInvalidResponsibilities = responsibilities.some(
+      (item) => !allowedResponsibilities.includes(item)
+    );
+
+    if (
+      hasInvalidResponsibilities ||
+      new Set(responsibilities).size !== responsibilities.length
+    ) {
+      return res.status(403).json({
+        status: "invalid_responsibilities",
+        message: "Administrator responsibilities are invalid",
+      });
+    }
+
+    // GM receives all responsibilities automatically.
+    // Admin must have at least one assigned responsibility.
+    if (
+      (admin.role === "gm" && responsibilities.length > 0) ||
+      (admin.role === "admin" && responsibilities.length === 0)
+    ) {
+      return res.status(403).json({
+        status: "invalid_responsibilities",
+        message: "Administrator responsibilities are not configured correctly",
+      });
+    }
+
+    // 9. Generate JWT token using the NEW schema
+    const token = jwt.sign(
+      {
+        id: admin._id.toString(),
+        admin: true,
+        user_type: "admin",
+        role: admin.role,
+        responsibilities,
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: "7d",
+      }
+    );
+
+    // 10. Construct admin response using the NEW schema
+    const adminData = {
+      id: admin._id.toString(),
+      username: admin.username,
+      email: admin.email,
+      first_name: admin.first_name,
+      last_name: admin.last_name,
+      phone: admin.phone,
+      profile_image: admin.profile_image || "",
+
+      user_type: "admin",
+      role: admin.role,
+      responsibilities,
+
+      must_change_password: admin.must_change_password,
+
+      is_verified: admin.is_verified,
+      is_active: admin.is_active,
+    };
+
+    // 11. Successful login
+    return res.status(200).json({
+      status: "login_success",
+      message: "Admin login successful",
+      token,
+      admin: adminData,
+    });
+
+  } catch (error) {
+    console.error("Admin login error:", error);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Server error during admin login",
+    });
+  }
+});
+
 
   app.post("/admin/create-rider", async (req, res) => {
     try {
