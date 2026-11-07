@@ -65,6 +65,7 @@ const adminSchema = new mongoose.Schema(
       default: "admin",
     },
 
+    // Assigned administrator roles
     roles: {
       type: [
         {
@@ -72,22 +73,33 @@ const adminSchema = new mongoose.Schema(
           enum: ALLOWED_ADMIN_ROLES,
         },
       ],
-      default: ["customersupport"],
       required: true,
-      validate: {
-        validator: function (roles) {
-          return (
-            Array.isArray(roles) &&
-            roles.length > 0 &&
-            new Set(roles).size === roles.length &&
-            roles.every((role) =>
-              ALLOWED_ADMIN_ROLES.includes(role)
-            )
-          );
+      default: ["customersupport"],
+
+      validate: [
+        {
+          validator: function (roles) {
+            return (
+              Array.isArray(roles) &&
+              roles.length > 0 &&
+              new Set(roles).size === roles.length &&
+              roles.every((role) =>
+                ALLOWED_ADMIN_ROLES.includes(role)
+              )
+            );
+          },
+          message:
+            "Select at least one valid role without duplicate roles.",
         },
-        message:
-          "Select at least one valid role without duplicate roles.",
-      },
+        {
+          validator: function (roles) {
+            // GM must be a standalone role.
+            return !roles.includes("gm") || roles.length === 1;
+          },
+          message:
+            "GM role cannot be combined with other administrator roles.",
+        },
+      ],
     },
 
     must_change_password: {
