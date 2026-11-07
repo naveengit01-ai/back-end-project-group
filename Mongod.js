@@ -1194,65 +1194,68 @@ app.get("/advertisements", async (req, res) => {
   }
 });
 
-/* =================================================
-   ADMIN AUTH & MANAGEMENT
-================================================= */
 
 app.post("/admin/login", async (req, res) => {
   try {
     const { username, password } = req.body;
 
     if (!username || !password) {
-      return res.json({
+      return res.status(400).json({
         status: "missing_fields",
-        message: "Username and password are required",
+        message: "Username and password are required"
       });
     }
 
     const admin = await Admin.findOne({ username });
 
     if (!admin) {
-      return res.json({
+      return res.status(401).json({
         status: "invalid_credentials",
-        message: "Invalid username or password",
+        message: "Invalid username or password"
       });
     }
 
-    const passwordMatch = await bcrypt.compare(password, admin.password);
+    const passwordMatch = await bcrypt.compare(
+      password,
+      admin.password
+    );
 
     if (!passwordMatch) {
-      return res.json({
+      return res.status(401).json({
         status: "invalid_credentials",
-        message: "Invalid username or password",
+        message: "Invalid username or password"
       });
     }
 
     if (!admin.is_active) {
-      return res.json({
+      return res.status(403).json({
         status: "account_inactive",
-        message: "Admin account is inactive",
+        message: "Admin account is inactive"
       });
     }
 
     if (!admin.is_verified) {
-      return res.json({
+      return res.status(403).json({
         status: "otp_required",
-        email: admin.email,
+        email: admin.email
       });
     }
 
+    // Generate administrator JWT
     const token = jwt.sign(
-  {
-    id: user._id,
-    role: user.user_type,
-    token_version: user.token_version ?? 0,
-  },
-  process.env.JWT_SECRET,
-  { expiresIn: "7d" }
-);
+      {
+        id: admin._id,
+        admin: true,
+        role: admin.user_type,
+        roles: Array.isArray(admin.roles) ? admin.roles : []
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
 
-    return res.json({
+    return res.status(200).json({
       status: "login_success",
+      message: "Admin login successful",
       token,
       admin: {
         id: admin._id,
@@ -1263,18 +1266,22 @@ app.post("/admin/login", async (req, res) => {
         phone: admin.phone,
         profile_image: admin.profile_image,
         user_type: admin.user_type,
+        roles: admin.roles || [],
         is_verified: admin.is_verified,
-        is_active: admin.is_active,
-      },
+        is_active: admin.is_active
+      }
     });
+
   } catch (error) {
     console.error("Admin login error:", error);
+
     return res.status(500).json({
       status: "error",
-      message: "Server error",
+      message: "Server error"
     });
   }
 });
+
 
 app.post("/admin/create-rider", async (req, res) => {
   try {
