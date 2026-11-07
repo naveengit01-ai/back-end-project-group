@@ -35,6 +35,7 @@ const googleOAuthClient = new google.auth.OAuth2(
 // Permanent frontend domains
 const allowedOrigins = [
   "https://www.dwjd.online",
+  "https://dwjd.online",
   "https://dwjd-org.vercel.app",
   "http://localhost:5173",
   "http://192.168.1.12:5173",
