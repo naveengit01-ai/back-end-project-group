@@ -7995,9 +7995,7 @@ app.post(
         scheduledWishTime
       );
 
-      const minimumAllowedTime = new Date(
-  Date.now() + 5 * 60 * 1000
-);
+  const minimumAllowedTime = new Date(Date.now() + 5 * 60 * 1000);
 
 if (!scheduledAt || scheduledAt < minimumAllowedTime) {
   return res.status(400).json({
@@ -8005,7 +8003,6 @@ if (!scheduledAt || scheduledAt < minimumAllowedTime) {
     message: "Please schedule the greeting at least 5 minutes in advance.",
   });
 }
-
       // 8. Donor snapshot.
       const donorName =
         `${user.first_name || ""} ${user.last_name || ""}`.trim() ||
