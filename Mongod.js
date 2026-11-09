@@ -257,6 +257,21 @@ const requireOccasionDonationUser = async (req, res, next) => {
   }
 };
 
+
+app.get("/razorpay/public-key", (req, res) => {
+  if (!process.env.RAZORPAY_KEY_ID) {
+    return res.status(503).json({
+      status: "error",
+      message: "Razorpay Key ID is not configured.",
+    });
+  }
+
+  return res.json({
+    status: "success",
+    key: process.env.RAZORPAY_KEY_ID,
+  });
+});
+
 /* ============================================
    OCCASION DONATION GOOGLE DRIVE UPLOAD
 ============================================ */
