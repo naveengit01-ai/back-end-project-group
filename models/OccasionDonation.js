@@ -284,7 +284,7 @@ const occasionDonationSchema = new mongoose.Schema(
     // Never store the original token in MongoDB.
     wishAccessTokenHash: {
       type: String,
-      default: "",
+      default: undefined,
       unique: true,
       sparse: true,
       index: true,
