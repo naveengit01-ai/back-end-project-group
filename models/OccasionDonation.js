@@ -289,9 +289,9 @@ const occasionDonationSchema = new mongoose.Schema(
       sparse: true,
       index: true,
     },
-    wishAccessTokenEncrypted: {
+  wishAccessTokenEncrypted: {
   type: String,
-  default: "",
+  default: undefined,
   select: false,
 },
 

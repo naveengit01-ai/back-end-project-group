@@ -8831,7 +8831,7 @@ app.patch(
             greetingLastError: "",
 
             wishAccessTokenHash: tokenHash,
-
+            wishAccessTokenEncrypted: encryptWishToken(rawToken),
             wishEmailStatus: "pending",
             wishEmailScheduledAt: emailScheduledAt,
             wishEmailSentAt: null,
