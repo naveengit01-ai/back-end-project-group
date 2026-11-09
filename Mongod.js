@@ -8592,6 +8592,288 @@ app.get(
 
 
 /* =========================================================
+   OCCASION DONATION ADMIN APIs
+   Uses existing:
+   - OccasionDonation
+   - requireAdmin
+   - razorpay
+   - mongoose
+   ========================================================= */
+
+// 1. GET ALL OCCASION DONATIONS
+// GET /api/occasion-donations/admin?status=pending_review
+
+app.get(
+  "/api/occasion-donations/admin",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { status = "pending_review" } = req.query;
+
+      const allowedStatuses = [
+        "pending_review",
+        "approved",
+        "rejected",
+        "all",
+      ];
+
+      if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid donation status.",
+        });
+      }
+
+      const filter = {
+        paymentStatus: { $in: ["paid", "refunded"] },
+      };
+
+      if (status !== "all") {
+        filter.adminStatus = status;
+      }
+
+      const donations = await OccasionDonation.find(filter)
+        .select("-razorpaySignature")
+        .sort({ createdAt: -1 })
+        .lean();
+
+      return res.status(200).json({
+        status: "success",
+        message: "Occasion donations retrieved successfully.",
+        count: donations.length,
+        donations,
+      });
+    } catch (error) {
+      console.error("Admin occasion donation fetch error:", error);
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to retrieve occasion donations.",
+      });
+    }
+  }
+);
+
+
+// 2. APPROVE OCCASION DONATION
+// PATCH /api/occasion-donations/admin/:id/approve
+
+app.patch(
+  "/api/occasion-donations/admin/:id/approve",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid donation ID.",
+        });
+      }
+
+      const donation = await OccasionDonation.findOneAndUpdate(
+        {
+          _id: id,
+          paymentStatus: "paid",
+          adminStatus: "pending_review",
+          scheduledAt: { $gt: new Date() },
+        },
+        {
+          $set: {
+            adminStatus: "approved",
+            greetingStatus: "scheduled",
+            reviewedBy: req.admin.id,
+            reviewedAt: new Date(),
+            rejectionReason: "",
+            greetingLastError: "",
+          },
+        },
+        { new: true, runValidators: true }
+      ).select("-razorpaySignature");
+
+      if (!donation) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "Donation not found, already reviewed, unpaid, or scheduled time has passed.",
+        });
+      }
+
+      return res.status(200).json({
+        status: "success",
+        message: "Occasion donation approved successfully.",
+        donation,
+      });
+    } catch (error) {
+      console.error("Approve occasion donation error:", error);
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to approve occasion donation.",
+      });
+    }
+  }
+);
+
+
+// 3. REJECT OCCASION DONATION + INITIATE RAZORPAY REFUND
+// PATCH /api/occasion-donations/admin/:id/reject
+//
+// Request body:
+// {
+//   "reason": "Invalid donation details"
+// }
+
+app.patch(
+  "/api/occasion-donations/admin/:id/reject",
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body || {};
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid donation ID.",
+        });
+      }
+
+      if (
+        typeof reason !== "string" ||
+        !reason.trim()
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Rejection reason is required.",
+        });
+      }
+
+      if (
+        !process.env.RAZORPAY_KEY_ID ||
+        !process.env.RAZORPAY_KEY_SECRET
+      ) {
+        return res.status(503).json({
+          status: "error",
+          message: "Razorpay is not configured.",
+        });
+      }
+
+      const donation = await OccasionDonation.findOne({
+        _id: id,
+        paymentStatus: "paid",
+        adminStatus: "pending_review",
+      });
+
+      if (!donation) {
+        return res.status(404).json({
+          status: "error",
+          message:
+            "Paid donation not found or it has already been reviewed.",
+        });
+      }
+
+      if (!donation.razorpayPaymentId) {
+        return res.status(400).json({
+          status: "error",
+          message: "Razorpay payment ID is missing.",
+        });
+      }
+
+      // Prevent duplicate refund requests.
+      if (donation.refundId) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "A refund has already been initiated for this donation.",
+          refundId: donation.refundId,
+        });
+      }
+
+      // Razorpay amount is in paise.
+      const refundAmount = Math.round(
+        Number(donation.amount) * 100
+      );
+
+      if (!Number.isSafeInteger(refundAmount) || refundAmount <= 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid donation refund amount.",
+        });
+      }
+
+      // Initiate Razorpay refund.
+      const refund = await razorpay.payments.refund(
+        donation.razorpayPaymentId,
+        {
+          amount: refundAmount,
+          notes: {
+            donationId: String(donation._id),
+            referenceCode: donation.referenceCode || "",
+            rejectionReason: reason.trim(),
+            rejectedBy: String(req.admin.id),
+          },
+        }
+      );
+
+      // Store refund details.
+      donation.refundId = refund.id || "";
+      donation.rejectionReason = reason.trim();
+      donation.reviewedBy = req.admin.id;
+      donation.reviewedAt = new Date();
+      donation.greetingStatus = "cancelled";
+
+      if (refund.status === "processed") {
+        donation.paymentStatus = "refunded";
+        donation.refundedAt = new Date();
+        donation.adminStatus = "rejected";
+        donation.refundError = "";
+      } else {
+        // Payment remains paid until Razorpay confirms the refund.
+        donation.adminStatus = "rejected";
+        donation.refundError =
+          `Refund initiated with status: ${refund.status}`;
+      }
+
+      await donation.save();
+
+      return res.status(200).json({
+        status: "success",
+        message:
+          refund.status === "processed"
+            ? "Donation rejected and refund completed."
+            : "Donation rejected and refund initiated. Awaiting Razorpay confirmation.",
+        refund: {
+          id: refund.id,
+          status: refund.status,
+          amount: refund.amount,
+          currency: refund.currency,
+        },
+        donation: {
+          id: donation._id,
+          referenceCode: donation.referenceCode,
+          adminStatus: donation.adminStatus,
+          paymentStatus: donation.paymentStatus,
+          refundId: donation.refundId,
+          refundedAt: donation.refundedAt,
+        },
+      });
+    } catch (error) {
+      console.error("Reject occasion donation error:", error);
+
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Unable to complete the rejection or refund request.",
+        error: error.error?.description || error.message,
+      });
+    }
+  }
+);
+
+
+/* =========================================================
    END OF OCCASION MONEY DONATION APIs
 ========================================================= */
 
