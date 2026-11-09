@@ -7995,13 +7995,16 @@ app.post(
         scheduledWishTime
       );
 
-      if (!scheduledAt || scheduledAt <= new Date()) {
-        return res.status(400).json({
-          status: "error",
-          message:
-            "Please select a valid future occasion date and time.",
-        });
-      }
+      const minimumAllowedTime = new Date(
+  Date.now() + 5 * 60 * 1000
+);
+
+if (!scheduledAt || scheduledAt < minimumAllowedTime) {
+  return res.status(400).json({
+    status: "error",
+    message: "Please schedule the greeting at least 5 minutes in advance.",
+  });
+}
 
       // 8. Donor snapshot.
       const donorName =
