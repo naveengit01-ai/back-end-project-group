@@ -18,6 +18,7 @@
   const BecomeRider = require("./models/BecomeRider");
   const Admin = require("./models/Admin");
   const aiRoutes = require("./routes/ai");
+  const OccasionDonation = require("./models/OccasionDonation");
   const app = express();
   const OAuthLoginCode = require("./models/OAuthLoginCode");
   const cookieParser = require("cookie-parser");
@@ -122,7 +123,256 @@
   // ============================================
   // ADMIN REPORT AUTHENTICATION
   // ============================================
+/* ============================================
+   OCCASION DONATION MEDIA UPLOAD
+============================================ */
 
+const occasionDonationUpload = multer({
+  storage: multer.memoryStorage(),
+
+  limits: {
+    fileSize: 50 * 1024 * 1024,
+    files: 5,
+    fields: 30,
+    fieldSize: 1024 * 1024,
+  },
+
+  fileFilter: (req, file, callback) => {
+    const allowedTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "video/mp4",
+      "video/webm",
+      "video/quicktime",
+    ];
+
+    if (!allowedTypes.includes(file.mimetype)) {
+      return callback(
+        new Error(
+          "Only JPG, PNG, WEBP, MP4, WEBM and MOV files are allowed."
+        )
+      );
+    }
+
+    callback(null, true);
+  },
+});
+
+/* ============================================
+   OCCASION DONATION USER AUTHENTICATION
+   Uses the existing user JWT format.
+============================================ */
+
+const requireOccasionDonationUser = async (req, res, next) => {
+  try {
+    const authorization = req.headers.authorization;
+
+    if (!authorization?.startsWith("Bearer ")) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Please log in to continue.",
+      });
+    }
+
+    const token = authorization.slice(7).trim();
+
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
+
+    if (!decoded.id || !["user", "rider"].includes(decoded.role)) {
+      return res.status(403).json({
+        status: "forbidden",
+        message: "A valid user account is required.",
+      });
+    }
+
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "User account not found.",
+      });
+    }
+
+    if (!user.is_verified) {
+      return res.status(403).json({
+        status: "account_unverified",
+        message: "Please verify your account first.",
+      });
+    }
+
+    if (user.is_active === false) {
+      return res.status(403).json({
+        status: "account_inactive",
+        message: "Your account is inactive.",
+      });
+    }
+
+    if (user.user_type !== decoded.role) {
+      return res.status(403).json({
+        status: "forbidden",
+        message: "Account type does not match your session.",
+      });
+    }
+
+    if (
+      decoded.token_version !== undefined &&
+      Number(decoded.token_version) !==
+        Number(user.token_version ?? 0)
+    ) {
+      return res.status(401).json({
+        status: "session_expired",
+        message: "Your session has expired. Please log in again.",
+      });
+    }
+
+    req.occasionDonationUser = user;
+
+    return next();
+  } catch (error) {
+    if (
+      error.name === "TokenExpiredError" ||
+      error.name === "JsonWebTokenError" ||
+      error.name === "NotBeforeError"
+    ) {
+      return res.status(401).json({
+        status: "unauthorized",
+        message: "Invalid or expired login session.",
+      });
+    }
+
+    console.error(
+      "Occasion donation authentication error:",
+      error
+    );
+
+    return res.status(500).json({
+      status: "error",
+      message: "Unable to authenticate your account.",
+    });
+  }
+};
+
+/* ============================================
+   OCCASION DONATION GOOGLE DRIVE UPLOAD
+============================================ */
+
+async function uploadOccasionDonationFile(file, recipientName) {
+  const folderId =
+    process.env.GOOGLE_DRIVE_OCCASION_DONATIONS_FOLDER_ID;
+
+  if (!folderId) {
+    throw new Error(
+      "Google Drive occasion donations folder is not configured."
+    );
+  }
+
+  const extensions = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "video/mp4": "mp4",
+    "video/webm": "webm",
+    "video/quicktime": "mov",
+  };
+
+  const extension = extensions[file.mimetype];
+
+  if (!extension) {
+    throw new Error("Unsupported occasion donation media format.");
+  }
+
+  const safeName = String(recipientName || "occasion")
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, 40);
+
+  const fileName =
+    `occasion_${safeName}_${Date.now()}_` +
+    `${crypto.randomBytes(5).toString("hex")}.${extension}`;
+
+  const uploaded = await drive.files.create({
+    requestBody: {
+      name: fileName,
+      mimeType: file.mimetype,
+      parents: [folderId],
+    },
+
+    media: {
+      mimeType: file.mimetype,
+      body: Readable.from(file.buffer),
+    },
+
+    fields: "id,name",
+  });
+
+  const fileId = uploaded.data.id;
+
+  try {
+    // These links are public. Use only if public media access
+    // is acceptable for your donation feature.
+    await drive.permissions.create({
+      fileId,
+
+      requestBody: {
+        type: "anyone",
+        role: "reader",
+      },
+    });
+
+    return {
+      driveFileId: fileId,
+
+      url: `https://drive.google.com/uc?export=view&id=${fileId}`,
+
+      name: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+
+      resourceType: file.mimetype.startsWith("video/")
+        ? "video"
+        : "image",
+    };
+  } catch (error) {
+    await drive.files
+      .delete({ fileId })
+      .catch((cleanupError) => {
+        console.error(
+          "Occasion media cleanup error:",
+          cleanupError.message
+        );
+      });
+
+    throw error;
+  }
+}
+
+/* ============================================
+   OCCASION DONATION DATE HELPER
+   Frontend sends India date and time.
+============================================ */
+
+function getOccasionScheduledAt(dateString, timeString) {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(dateString || "") ||
+    !/^([01]\d|2[0-3]):([0-5]\d)$/.test(timeString || "")
+  ) {
+    return null;
+  }
+
+  const scheduledAt = new Date(
+    `${dateString}T${timeString}:00+05:30`
+  );
+
+  if (Number.isNaN(scheduledAt.getTime())) {
+    return null;
+  }
+
+  return scheduledAt;
+}
   const requireGMForReports = async (req, res, next) => {
     try {
       const authorization = req.headers.authorization;
@@ -7500,6 +7750,661 @@ app.get(
       });
     }
   });
+  /* =========================================================
+   OCCASION MONEY DONATION
+   USER-SIDE APIs
+========================================================= */
+
+
+/* =========================================================
+   API 1: CREATE OCCASION DONATION
+   POST /occasion-donations
+
+   Content-Type: multipart/form-data
+   Upload field: media
+========================================================= */
+
+app.post(
+  "/occasion-donations",
+
+  requireOccasionDonationUser,
+
+  (req, res, next) => {
+    occasionDonationUpload.array("media", 5)(
+      req,
+      res,
+      (error) => {
+        if (!error) {
+          return next();
+        }
+
+        const tooLarge =
+          error instanceof multer.MulterError &&
+          error.code === "LIMIT_FILE_SIZE";
+
+        return res.status(tooLarge ? 413 : 400).json({
+          status: "error",
+          message: tooLarge
+            ? "Each media file must be below 50 MB."
+            : error.message || "Media upload failed.",
+        });
+      }
+    );
+  },
+
+  async (req, res) => {
+    const uploadedMedia = [];
+
+    try {
+      const user = req.occasionDonationUser;
+
+      const {
+        occasionType,
+        occasionTitle,
+        occasionDate,
+        scheduledWishTime,
+        recipientName,
+        recipientEmail,
+        recipientPhone,
+        recipientContactConsent,
+        dedicationName,
+        donorMessage,
+        amount,
+        termsAccepted,
+      } = req.body;
+
+      // 1. Validate occasion.
+      const allowedOccasions = [
+        "Birthday",
+        "Wedding",
+        "Wedding Anniversary",
+        "Engagement",
+        "Graduation",
+        "New Job",
+        "Promotion",
+        "Baby Shower",
+        "Newborn / Naming Ceremony",
+        "Housewarming",
+        "Retirement",
+        "Festival",
+        "Memorial / In Loving Memory",
+        "Get Well Soon",
+        "Thank You",
+        "Just Because",
+        "Other",
+      ];
+
+      if (!allowedOccasions.includes(occasionType)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Please select a valid occasion.",
+        });
+      }
+
+      // 2. Validate recipient.
+      if (
+        !recipientName ||
+        typeof recipientName !== "string" ||
+        !recipientName.trim()
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Recipient name is required.",
+        });
+      }
+
+      const normalizedRecipientEmail = String(
+        recipientEmail || ""
+      )
+        .trim()
+        .toLowerCase();
+
+      const normalizedRecipientPhone = String(
+        recipientPhone || ""
+      ).trim();
+
+      if (
+        !normalizedRecipientEmail &&
+        !normalizedRecipientPhone
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Recipient email or phone number is required.",
+        });
+      }
+
+      if (
+        normalizedRecipientEmail &&
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+          normalizedRecipientEmail
+        )
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Please provide a valid recipient email.",
+        });
+      }
+
+      // 3. Validate amount.
+      const donationAmount = Number(amount);
+
+      if (
+        !Number.isSafeInteger(donationAmount) ||
+        donationAmount < 1 ||
+        donationAmount > 1000000
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Donation amount must be between ₹1 and ₹10,00,000.",
+        });
+      }
+
+      // 4. Validate consent.
+      const hasContactConsent =
+        recipientContactConsent === true ||
+        recipientContactConsent === "true";
+
+      const hasAcceptedTerms =
+        termsAccepted === true ||
+        termsAccepted === "true";
+
+      if (!hasContactConsent || !hasAcceptedTerms) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Recipient contact consent and donation terms acceptance are required.",
+        });
+      }
+
+      // 5. Validate scheduled greeting time.
+      const scheduledAt = getOccasionScheduledAt(
+        occasionDate,
+        scheduledWishTime
+      );
+
+      if (!scheduledAt || scheduledAt <= new Date()) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Please select a valid future occasion date and time.",
+        });
+      }
+
+      // 6. Upload media to Google Drive.
+      for (const file of req.files || []) {
+        const media = await uploadOccasionDonationFile(
+          file,
+          recipientName
+        );
+
+        uploadedMedia.push(media);
+      }
+
+      // 7. Create donation record.
+      const donorName =
+        `${user.first_name || ""} ${user.last_name || ""}`.trim() ||
+        user.username ||
+        "";
+
+      const donation = await OccasionDonation.create({
+        donor: user._id,
+
+        donorSnapshot: {
+          name: donorName,
+          email: user.email || "",
+          phone: user.phone || "",
+        },
+
+        occasionType,
+        occasionTitle: String(occasionTitle || "").trim(),
+
+        occasionDate: new Date(
+          `${occasionDate}T00:00:00+05:30`
+        ),
+
+        scheduledWishTime,
+        timeZone: "Asia/Kolkata",
+        scheduledAt,
+
+        recipientName: recipientName.trim(),
+        recipientEmail: normalizedRecipientEmail,
+        recipientPhone: normalizedRecipientPhone,
+
+        recipientContactConsent: true,
+
+        dedicationName: String(
+          dedicationName || ""
+        ).trim(),
+
+        donorMessage: String(
+          donorMessage || ""
+        ).trim(),
+
+        amount: donationAmount,
+        currency: "INR",
+
+        media: uploadedMedia,
+
+        termsAccepted: true,
+
+        paymentStatus: "created",
+        adminStatus: "awaiting_payment",
+        greetingStatus: "not_scheduled",
+      });
+
+      return res.status(201).json({
+        status: "success",
+        message:
+          "Occasion donation request created. Continue to payment.",
+
+        donation: {
+          id: String(donation._id),
+          referenceCode: donation.referenceCode,
+          amount: donation.amount,
+          currency: donation.currency,
+          paymentStatus: donation.paymentStatus,
+          adminStatus: donation.adminStatus,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Create occasion donation error:",
+        error
+      );
+
+      // Roll back Drive uploads if database save fails.
+      for (const media of uploadedMedia) {
+        try {
+          await drive.files.delete({
+            fileId: media.driveFileId,
+          });
+        } catch (cleanupError) {
+          console.error(
+            "Occasion donation Drive cleanup error:",
+            cleanupError.message
+          );
+        }
+      }
+
+      if (error.name === "ValidationError") {
+        return res.status(400).json({
+          status: "validation_error",
+          message: error.message,
+        });
+      }
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to create occasion donation.",
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   API 2: CREATE RAZORPAY ORDER
+   POST /occasion-donations/:id/create-order
+========================================================= */
+
+app.post(
+  "/occasion-donations/:id/create-order",
+
+  requireOccasionDonationUser,
+
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid donation ID.",
+        });
+      }
+
+      if (
+        !process.env.RAZORPAY_KEY_ID ||
+        !process.env.RAZORPAY_KEY_SECRET
+      ) {
+        return res.status(503).json({
+          status: "error",
+          message: "Razorpay is not configured.",
+        });
+      }
+
+      const donation = await OccasionDonation.findOne({
+        _id: id,
+        donor: req.occasionDonationUser._id,
+      });
+
+      if (!donation) {
+        return res.status(404).json({
+          status: "error",
+          message: "Donation request not found.",
+        });
+      }
+
+      if (donation.paymentStatus === "paid") {
+        return res.status(409).json({
+          status: "error",
+          message: "This donation has already been paid.",
+        });
+      }
+
+      if (
+        ["rejected", "approved"].includes(
+          donation.adminStatus
+        )
+      ) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "This donation request can no longer be paid.",
+        });
+      }
+
+      // Reuse an existing active Razorpay order.
+      if (donation.razorpayOrderId) {
+        const existingOrder = await razorpay.orders
+          .fetch(donation.razorpayOrderId)
+          .catch(() => null);
+
+        if (
+          existingOrder &&
+          existingOrder.status === "created"
+        ) {
+          return res.status(200).json({
+            status: "success",
+
+            order: {
+              id: existingOrder.id,
+              amount: existingOrder.amount,
+              currency: existingOrder.currency,
+            },
+
+            prefill: {
+              name: donation.donorSnapshot.name,
+              email: donation.donorSnapshot.email,
+              contact: donation.donorSnapshot.phone,
+            },
+          });
+        }
+      }
+
+      // Amount is taken from MongoDB, never from frontend.
+      const amountInPaise = donation.amount * 100;
+
+      if (
+        !Number.isSafeInteger(amountInPaise) ||
+        amountInPaise < 100
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid donation amount.",
+        });
+      }
+
+      const order = await razorpay.orders.create({
+        amount: amountInPaise,
+        currency: "INR",
+        receipt: donation.referenceCode,
+
+        notes: {
+          donation_id: String(donation._id),
+          reference_code: donation.referenceCode,
+          donation_type: "occasion_money_donation",
+        },
+      });
+
+      donation.razorpayOrderId = order.id;
+      donation.paymentStatus = "pending";
+
+      await donation.save();
+
+      return res.status(201).json({
+        status: "success",
+        message: "Razorpay order created successfully.",
+
+        order: {
+          id: order.id,
+          amount: order.amount,
+          currency: order.currency,
+        },
+
+        prefill: {
+          name: donation.donorSnapshot.name,
+          email: donation.donorSnapshot.email,
+          contact: donation.donorSnapshot.phone,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Occasion donation Razorpay order error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to create Razorpay order.",
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   API 3: VERIFY RAZORPAY PAYMENT
+   POST /occasion-donations/:id/verify-payment
+========================================================= */
+
+app.post(
+  "/occasion-donations/:id/verify-payment",
+
+  requireOccasionDonationUser,
+
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const {
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+      } = req.body || {};
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid donation ID.",
+        });
+      }
+
+      const donation = await OccasionDonation.findOne({
+        _id: id,
+        donor: req.occasionDonationUser._id,
+      });
+
+      if (!donation) {
+        return res.status(404).json({
+          status: "error",
+          message: "Donation request not found.",
+        });
+      }
+
+      // Idempotency: allow safe repeated verification.
+      if (
+        donation.paymentStatus === "paid" &&
+        donation.razorpayPaymentId === razorpay_payment_id
+      ) {
+        return res.status(200).json({
+          status: "success",
+          message: "Payment was already verified.",
+
+          donation: {
+            id: String(donation._id),
+            referenceCode: donation.referenceCode,
+            paymentStatus: donation.paymentStatus,
+            adminStatus: donation.adminStatus,
+          },
+        });
+      }
+
+      if (
+        !razorpay_order_id ||
+        !razorpay_payment_id ||
+        !razorpay_signature
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Payment verification details are missing.",
+        });
+      }
+
+      if (
+        razorpay_order_id !== donation.razorpayOrderId
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Razorpay order does not match this donation.",
+        });
+      }
+
+      // Verify checkout signature.
+      const expectedSignature = crypto
+        .createHmac(
+          "sha256",
+          process.env.RAZORPAY_KEY_SECRET
+        )
+        .update(
+          `${razorpay_order_id}|${razorpay_payment_id}`
+        )
+        .digest("hex");
+
+      const receivedBuffer = Buffer.from(
+        String(razorpay_signature),
+        "utf8"
+      );
+
+      const expectedBuffer = Buffer.from(
+        expectedSignature,
+        "utf8"
+      );
+
+      if (
+        receivedBuffer.length !== expectedBuffer.length ||
+        !crypto.timingSafeEqual(
+          receivedBuffer,
+          expectedBuffer
+        )
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid Razorpay payment signature.",
+        });
+      }
+
+      // Verify payment directly with Razorpay.
+      const payment = await razorpay.payments.fetch(
+        razorpay_payment_id
+      );
+
+      if (
+        payment.order_id !== donation.razorpayOrderId ||
+        Number(payment.amount) !== donation.amount * 100 ||
+        payment.currency !== "INR" ||
+        payment.status !== "captured"
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Payment is not captured or payment amount does not match.",
+        });
+      }
+
+      // Save verified payment.
+      donation.paymentStatus = "paid";
+      donation.adminStatus = "pending_review";
+
+      donation.razorpayPaymentId = payment.id;
+      donation.razorpaySignature = razorpay_signature;
+
+      donation.paidAt = payment.created_at
+        ? new Date(payment.created_at * 1000)
+        : new Date();
+
+      await donation.save();
+
+      return res.status(200).json({
+        status: "success",
+        message:
+          "Payment verified successfully. Your request is awaiting review.",
+
+        donation: {
+          id: String(donation._id),
+          referenceCode: donation.referenceCode,
+          paymentStatus: donation.paymentStatus,
+          adminStatus: donation.adminStatus,
+          amount: donation.amount,
+          currency: donation.currency,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Occasion donation payment verification error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to verify donation payment.",
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   API 4: GET MY OCCASION DONATIONS
+   GET /occasion-donations/my-requests
+========================================================= */
+
+app.get(
+  "/occasion-donations/my-requests",
+
+  requireOccasionDonationUser,
+
+  async (req, res) => {
+    try {
+      const donations = await OccasionDonation.find({
+        donor: req.occasionDonationUser._id,
+      })
+        .select("-razorpaySignature")
+        .sort({ createdAt: -1 })
+        .lean();
+
+      return res.status(200).json({
+        status: "success",
+        message: "Occasion donation history retrieved successfully.",
+
+        count: donations.length,
+        donations,
+      });
+    } catch (error) {
+      console.error(
+        "Fetch occasion donation history error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message: "Unable to retrieve donation history.",
+      });
+    }
+  }
+);
   /* ================= SERVER START ================= */
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
