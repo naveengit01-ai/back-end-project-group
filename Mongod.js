@@ -7765,51 +7765,33 @@ app.get(
       });
     }
   });
-  /* =========================================================
-   OCCASION MONEY DONATION
-   USER-SIDE APIs
+ 
+/* =========================================================
+   OCCASION MONEY DONATION APIs
+   Base URL: /api/occasion-donations
+
+   API 1: POST   /api/occasion-donations
+   API 2: POST   /api/occasion-donations/:id/create-order
+   API 3: POST   /api/occasion-donations/:id/verify-payment
+   API 4: POST   /api/occasion-donations/:id/upload-media
+   API 5: GET    /api/occasion-donations/my-requests
 ========================================================= */
 
 
 /* =========================================================
    API 1: CREATE OCCASION DONATION
-   POST /occasion-donations
+   POST /api/occasion-donations
 
-   Content-Type: multipart/form-data
-   Upload field: media
+   Content-Type: application/json
+
+   Creates MongoDB record only.
+   Does NOT upload files to Google Drive.
 ========================================================= */
 
 app.post(
-  "/occasion-donations",
-
+  "/api/occasion-donations",
   requireOccasionDonationUser,
-
-  (req, res, next) => {
-    occasionDonationUpload.array("media", 5)(
-      req,
-      res,
-      (error) => {
-        if (!error) {
-          return next();
-        }
-
-        const tooLarge =
-          error instanceof multer.MulterError &&
-          error.code === "LIMIT_FILE_SIZE";
-
-        return res.status(tooLarge ? 413 : 400).json({
-          status: "error",
-          message: tooLarge
-            ? "Each media file must be below 50 MB."
-            : error.message || "Media upload failed.",
-        });
-      }
-    );
-  },
-
   async (req, res) => {
-    const uploadedMedia = [];
-
     try {
       const user = req.occasionDonationUser;
 
@@ -7826,7 +7808,7 @@ app.post(
         donorMessage,
         amount,
         termsAccepted,
-      } = req.body;
+      } = req.body || {};
 
       // 1. Validate occasion.
       const allowedOccasions = [
@@ -7856,9 +7838,8 @@ app.post(
         });
       }
 
-      // 2. Validate recipient.
+      // 2. Validate recipient name.
       if (
-        !recipientName ||
         typeof recipientName !== "string" ||
         !recipientName.trim()
       ) {
@@ -7878,6 +7859,7 @@ app.post(
         recipientPhone || ""
       ).trim();
 
+      // 3. Recipient must have email or phone.
       if (
         !normalizedRecipientEmail &&
         !normalizedRecipientPhone
@@ -7889,6 +7871,7 @@ app.post(
         });
       }
 
+      // 4. Validate email.
       if (
         normalizedRecipientEmail &&
         !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
@@ -7901,7 +7884,7 @@ app.post(
         });
       }
 
-      // 3. Validate amount.
+      // 5. Validate amount.
       const donationAmount = Number(amount);
 
       if (
@@ -7916,7 +7899,7 @@ app.post(
         });
       }
 
-      // 4. Validate consent.
+      // 6. Validate consent.
       const hasContactConsent =
         recipientContactConsent === true ||
         recipientContactConsent === "true";
@@ -7933,7 +7916,7 @@ app.post(
         });
       }
 
-      // 5. Validate scheduled greeting time.
+      // 7. Validate scheduled occasion date.
       const scheduledAt = getOccasionScheduledAt(
         occasionDate,
         scheduledWishTime
@@ -7947,22 +7930,14 @@ app.post(
         });
       }
 
-      // 6. Upload media to Google Drive.
-      for (const file of req.files || []) {
-        const media = await uploadOccasionDonationFile(
-          file,
-          recipientName
-        );
-
-        uploadedMedia.push(media);
-      }
-
-      // 7. Create donation record.
+      // 8. Donor snapshot.
       const donorName =
         `${user.first_name || ""} ${user.last_name || ""}`.trim() ||
         user.username ||
         "";
 
+      // 9. Save donation in MongoDB.
+      // Media stays empty until payment is verified.
       const donation = await OccasionDonation.create({
         donor: user._id,
 
@@ -7973,7 +7948,10 @@ app.post(
         },
 
         occasionType,
-        occasionTitle: String(occasionTitle || "").trim(),
+
+        occasionTitle: String(
+          occasionTitle || ""
+        ).trim(),
 
         occasionDate: new Date(
           `${occasionDate}T00:00:00+05:30`
@@ -8000,7 +7978,7 @@ app.post(
         amount: donationAmount,
         currency: "INR",
 
-        media: uploadedMedia,
+        media: [],
 
         termsAccepted: true,
 
@@ -8021,27 +7999,15 @@ app.post(
           currency: donation.currency,
           paymentStatus: donation.paymentStatus,
           adminStatus: donation.adminStatus,
+          media: donation.media,
         },
       });
+
     } catch (error) {
       console.error(
         "Create occasion donation error:",
         error
       );
-
-      // Roll back Drive uploads if database save fails.
-      for (const media of uploadedMedia) {
-        try {
-          await drive.files.delete({
-            fileId: media.driveFileId,
-          });
-        } catch (cleanupError) {
-          console.error(
-            "Occasion donation Drive cleanup error:",
-            cleanupError.message
-          );
-        }
-      }
 
       if (error.name === "ValidationError") {
         return res.status(400).json({
@@ -8061,14 +8027,14 @@ app.post(
 
 /* =========================================================
    API 2: CREATE RAZORPAY ORDER
-   POST /occasion-donations/:id/create-order
+   POST /api/occasion-donations/:id/create-order
+
+   Amount is always taken from MongoDB.
 ========================================================= */
 
 app.post(
-  "/occasion-donations/:id/create-order",
-
+  "/api/occasion-donations/:id/create-order",
   requireOccasionDonationUser,
-
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -8110,7 +8076,7 @@ app.post(
       }
 
       if (
-        ["rejected", "approved"].includes(
+        ["approved", "rejected"].includes(
           donation.adminStatus
         )
       ) {
@@ -8121,7 +8087,7 @@ app.post(
         });
       }
 
-      // Reuse an existing active Razorpay order.
+      // Reuse existing active Razorpay order.
       if (donation.razorpayOrderId) {
         const existingOrder = await razorpay.orders
           .fetch(donation.razorpayOrderId)
@@ -8133,6 +8099,7 @@ app.post(
         ) {
           return res.status(200).json({
             status: "success",
+            message: "Existing Razorpay order reused.",
 
             order: {
               id: existingOrder.id,
@@ -8149,7 +8116,7 @@ app.post(
         }
       }
 
-      // Amount is taken from MongoDB, never from frontend.
+      // Amount comes from database, not frontend.
       const amountInPaise = donation.amount * 100;
 
       if (
@@ -8195,6 +8162,7 @@ app.post(
           contact: donation.donorSnapshot.phone,
         },
       });
+
     } catch (error) {
       console.error(
         "Occasion donation Razorpay order error:",
@@ -8212,14 +8180,19 @@ app.post(
 
 /* =========================================================
    API 3: VERIFY RAZORPAY PAYMENT
-   POST /occasion-donations/:id/verify-payment
+   POST /api/occasion-donations/:id/verify-payment
+
+   Payment is marked paid only after:
+   1. Signature validation.
+   2. Razorpay payment fetch.
+   3. Order ID validation.
+   4. Amount validation.
+   5. Captured payment status validation.
 ========================================================= */
 
 app.post(
-  "/occasion-donations/:id/verify-payment",
-
+  "/api/occasion-donations/:id/verify-payment",
   requireOccasionDonationUser,
-
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -8249,7 +8222,7 @@ app.post(
         });
       }
 
-      // Idempotency: allow safe repeated verification.
+      // Idempotency.
       if (
         donation.paymentStatus === "paid" &&
         donation.razorpayPaymentId === razorpay_payment_id
@@ -8263,6 +8236,8 @@ app.post(
             referenceCode: donation.referenceCode,
             paymentStatus: donation.paymentStatus,
             adminStatus: donation.adminStatus,
+            amount: donation.amount,
+            currency: donation.currency,
           },
         });
       }
@@ -8274,7 +8249,8 @@ app.post(
       ) {
         return res.status(400).json({
           status: "error",
-          message: "Payment verification details are missing.",
+          message:
+            "Payment verification details are missing.",
         });
       }
 
@@ -8283,11 +8259,19 @@ app.post(
       ) {
         return res.status(400).json({
           status: "error",
-          message: "Razorpay order does not match this donation.",
+          message:
+            "Razorpay order does not match this donation.",
         });
       }
 
-      // Verify checkout signature.
+      if (!process.env.RAZORPAY_KEY_SECRET) {
+        return res.status(503).json({
+          status: "error",
+          message: "Razorpay is not configured.",
+        });
+      }
+
+      // Verify Razorpay checkout signature.
       const expectedSignature = crypto
         .createHmac(
           "sha256",
@@ -8321,7 +8305,7 @@ app.post(
         });
       }
 
-      // Verify payment directly with Razorpay.
+      // Fetch payment directly from Razorpay.
       const payment = await razorpay.payments.fetch(
         razorpay_payment_id
       );
@@ -8339,7 +8323,7 @@ app.post(
         });
       }
 
-      // Save verified payment.
+      // Save verified payment in MongoDB.
       donation.paymentStatus = "paid";
       donation.adminStatus = "pending_review";
 
@@ -8366,6 +8350,7 @@ app.post(
           currency: donation.currency,
         },
       });
+
     } catch (error) {
       console.error(
         "Occasion donation payment verification error:",
@@ -8382,12 +8367,194 @@ app.post(
 
 
 /* =========================================================
-   API 4: GET MY OCCASION DONATIONS
-   GET /occasion-donations/my-requests
+   API 4: UPLOAD MEDIA AFTER SUCCESSFUL PAYMENT
+   POST /api/occasion-donations/:id/upload-media
+
+   Content-Type: multipart/form-data
+   Field name: media
+
+   Google Drive upload is allowed only when:
+   paymentStatus === "paid"
+
+   Maximum:
+   - 5 files
+   - 50 MB per file
+   - 100 MB total
+========================================================= */
+
+app.post(
+  "/api/occasion-donations/:id/upload-media",
+
+  requireOccasionDonationUser,
+
+  (req, res, next) => {
+    occasionDonationUpload.array("media", 5)(
+      req,
+      res,
+      (error) => {
+        if (!error) {
+          return next();
+        }
+
+        const tooLarge =
+          error instanceof multer.MulterError &&
+          error.code === "LIMIT_FILE_SIZE";
+
+        return res.status(tooLarge ? 413 : 400).json({
+          status: "error",
+          message: tooLarge
+            ? "Each media file must be below 50 MB."
+            : error.message || "Media upload failed.",
+        });
+      }
+    );
+  },
+
+  async (req, res) => {
+    const uploadedMedia = [];
+
+    try {
+      const { id } = req.params;
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid donation ID.",
+        });
+      }
+
+      const donation = await OccasionDonation.findOne({
+        _id: id,
+        donor: req.occasionDonationUser._id,
+      });
+
+      if (!donation) {
+        return res.status(404).json({
+          status: "error",
+          message: "Donation request not found.",
+        });
+      }
+
+      // Critical security check:
+      // No Drive upload before verified payment.
+      if (
+        donation.paymentStatus !== "paid" ||
+        !donation.razorpayPaymentId
+      ) {
+        return res.status(403).json({
+          status: "payment_required",
+          message:
+            "Please complete and verify payment before uploading media.",
+        });
+      }
+
+      // Prevent uploading the same donation media repeatedly.
+      if (donation.media && donation.media.length > 0) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "Media has already been uploaded for this donation.",
+          media: donation.media,
+        });
+      }
+
+      const files = req.files || [];
+
+      if (files.length === 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "Please select at least one media file.",
+        });
+      }
+
+      // Validate total upload size.
+      const totalSize = files.reduce(
+        (total, file) => total + file.size,
+        0
+      );
+
+      if (totalSize > 100 * 1024 * 1024) {
+        return res.status(413).json({
+          status: "error",
+          message:
+            "Total media upload size must not exceed 100 MB.",
+        });
+      }
+
+      // Upload files to Google Drive.
+      for (const file of files) {
+        const media = await uploadOccasionDonationFile(
+          file,
+          donation.recipientName
+        );
+
+        uploadedMedia.push(media);
+      }
+
+      // Save uploaded media information in MongoDB.
+      donation.media = uploadedMedia;
+
+      await donation.save();
+
+      return res.status(200).json({
+        status: "success",
+        message:
+          "Media uploaded successfully and saved to your donation.",
+
+        donation: {
+          id: String(donation._id),
+          referenceCode: donation.referenceCode,
+          paymentStatus: donation.paymentStatus,
+          media: donation.media,
+        },
+      });
+
+    } catch (error) {
+      console.error(
+        "Occasion donation media upload error:",
+        error
+      );
+
+      // Remove Drive files if MongoDB save or upload fails.
+      for (const media of uploadedMedia) {
+        try {
+          await drive.files.delete({
+            fileId: media.driveFileId,
+          });
+        } catch (cleanupError) {
+          console.error(
+            "Occasion donation Drive cleanup error:",
+            cleanupError.message
+          );
+        }
+      }
+
+      if (error.name === "ValidationError") {
+        return res.status(400).json({
+          status: "validation_error",
+          message: error.message,
+        });
+      }
+
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Media upload failed. Your verified payment remains recorded. Please retry the media upload.",
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   API 5: GET MY OCCASION DONATIONS
+   GET /api/occasion-donations/my-requests
+
+   Returns the logged-in user's donation history.
 ========================================================= */
 
 app.get(
-  "/occasion-donations/my-requests",
+  "/api/occasion-donations/my-requests",
 
   requireOccasionDonationUser,
 
@@ -8402,11 +8569,13 @@ app.get(
 
       return res.status(200).json({
         status: "success",
-        message: "Occasion donation history retrieved successfully.",
+        message:
+          "Occasion donation history retrieved successfully.",
 
         count: donations.length,
         donations,
       });
+
     } catch (error) {
       console.error(
         "Fetch occasion donation history error:",
@@ -8420,6 +8589,12 @@ app.get(
     }
   }
 );
+
+
+/* =========================================================
+   END OF OCCASION MONEY DONATION APIs
+========================================================= */
+
   /* ================= SERVER START ================= */
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
