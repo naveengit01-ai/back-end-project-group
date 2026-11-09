@@ -621,6 +621,79 @@ console.log("Admin collection:", Admin.collection.name);
     );
   };
 
+/* =========================================================
+   OCCASION WISHES TOKEN ENCRYPTION
+========================================================= */
+
+function getWishEncryptionKey() {
+  const key = process.env.WISH_TOKEN_ENCRYPTION_KEY;
+
+  if (!key || !/^[a-f0-9]{64}$/i.test(key)) {
+    throw new Error(
+      "WISH_TOKEN_ENCRYPTION_KEY must be a 64-character hexadecimal key."
+    );
+  }
+
+  return Buffer.from(key, "hex");
+}
+
+function encryptWishToken(token) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(
+    "aes-256-gcm",
+    getWishEncryptionKey(),
+    iv
+  );
+
+  const encrypted = Buffer.concat([
+    cipher.update(token, "utf8"),
+    cipher.final(),
+  ]);
+
+  const authTag = cipher.getAuthTag();
+
+  return [
+    iv.toString("hex"),
+    authTag.toString("hex"),
+    encrypted.toString("hex"),
+  ].join(":");
+}
+
+function decryptWishToken(encryptedValue) {
+  const [ivHex, authTagHex, encryptedHex] =
+    String(encryptedValue || "").split(":");
+
+  if (!ivHex || !authTagHex || !encryptedHex) {
+    throw new Error("Invalid encrypted wishes token.");
+  }
+
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    getWishEncryptionKey(),
+    Buffer.from(ivHex, "hex")
+  );
+
+  decipher.setAuthTag(Buffer.from(authTagHex, "hex"));
+
+  return Buffer.concat([
+    decipher.update(Buffer.from(encryptedHex, "hex")),
+    decipher.final(),
+  ]).toString("utf8");
+}
+
+function escapeWishHtml(value) {
+  return String(value || "").replace(
+    /[&<>"']/g,
+    (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    })[character]
+  );
+}
+
   /* ================= OTP EMAIL ================= */
   const sendOTP = async (email, otp) => {
     await sendEmail({
@@ -8655,8 +8728,19 @@ app.get(
 );
 
 
-// 2. APPROVE OCCASION DONATION
-// PATCH /api/occasion-donations/admin/:id/approve
+
+/* =========================================================
+   APPROVE OCCASION DONATION + GENERATE UNIQUE WISHES LINK
+
+   PATCH /api/occasion-donations/admin/:id/approve
+
+   Workflow:
+   1. Admin approves donation.
+   2. Generate secure unique token.
+   3. Store SHA-256 hash only.
+   4. Schedule email for 2 minutes before scheduledAt.
+   5. Wishes page remains locked until scheduledAt.
+========================================================= */
 
 app.patch(
   "/api/occasion-donations/admin/:id/approve",
@@ -8672,41 +8756,137 @@ app.patch(
         });
       }
 
+      const now = new Date();
+
+      // Fetch the pending paid donation.
+      const existingDonation = await OccasionDonation.findOne({
+        _id: id,
+        paymentStatus: "paid",
+        adminStatus: "pending_review",
+      });
+
+      if (!existingDonation) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "Donation not found, already reviewed, or payment is not completed.",
+        });
+      }
+
+      if (!existingDonation.recipientEmail) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Recipient email is required to send the scheduled wishes invitation.",
+        });
+      }
+
+      if (
+        !existingDonation.scheduledAt ||
+        existingDonation.scheduledAt <= now
+      ) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "The scheduled occasion time has already passed.",
+        });
+      }
+
+      // Generate a cryptographically secure token.
+      const rawToken = crypto.randomBytes(32).toString("hex");
+
+      // Store only the SHA-256 hash in MongoDB.
+      const tokenHash = crypto
+        .createHash("sha256")
+        .update(rawToken)
+        .digest("hex");
+
+      // Email is scheduled 2 minutes before the occasion.
+      // If approval happens inside that 2-minute window,
+      // the email is due immediately.
+      const twoMinutesBefore = new Date(
+        existingDonation.scheduledAt.getTime() - 2 * 60 * 1000
+      );
+
+      const emailScheduledAt =
+        twoMinutesBefore > now ? twoMinutesBefore : now;
+
       const donation = await OccasionDonation.findOneAndUpdate(
         {
           _id: id,
           paymentStatus: "paid",
           adminStatus: "pending_review",
-          scheduledAt: { $gt: new Date() },
+          scheduledAt: { $gt: now },
         },
         {
           $set: {
             adminStatus: "approved",
+
             greetingStatus: "scheduled",
+
             reviewedBy: req.admin.id,
-            reviewedAt: new Date(),
+            reviewedAt: now,
+
             rejectionReason: "",
             greetingLastError: "",
+
+            wishAccessTokenHash: tokenHash,
+
+            wishEmailStatus: "pending",
+            wishEmailScheduledAt: emailScheduledAt,
+            wishEmailSentAt: null,
+            wishEmailAttempts: 0,
+            wishEmailLastError: "",
+
+            wishPageStatus: "locked",
+            wishPagePublishedAt: null,
           },
         },
-        { new: true, runValidators: true }
+        {
+          new: true,
+          runValidators: true,
+        }
       ).select("-razorpaySignature");
 
       if (!donation) {
         return res.status(409).json({
           status: "error",
           message:
-            "Donation not found, already reviewed, unpaid, or scheduled time has passed.",
+            "This donation was already reviewed or its scheduled time has passed.",
         });
       }
 
+      // The original token is used only to construct the email link.
+      // It is never stored in MongoDB or returned in this response.
+      const frontendUrl = (
+        process.env.FRONTEND_URL || "https://www.dwjd.online"
+      ).replace(/\/+$/, "");
+
+      const wishesUrl =
+        `${frontendUrl}/wishes/${rawToken}`;
+
       return res.status(200).json({
         status: "success",
-        message: "Occasion donation approved successfully.",
-        donation,
+        message:
+          "Occasion donation approved. The recipient invitation email has been scheduled.",
+
+        donation: {
+          id: String(donation._id),
+          referenceCode: donation.referenceCode,
+          adminStatus: donation.adminStatus,
+          paymentStatus: donation.paymentStatus,
+          greetingStatus: donation.greetingStatus,
+          wishEmailStatus: donation.wishEmailStatus,
+          wishEmailScheduledAt: donation.wishEmailScheduledAt,
+          wishPageStatus: donation.wishPageStatus,
+        },
       });
+
     } catch (error) {
-      console.error("Approve occasion donation error:", error);
+      console.error(
+        "Approve occasion donation error:",
+        error
+      );
 
       return res.status(500).json({
         status: "error",
@@ -8715,6 +8895,7 @@ app.patch(
     }
   }
 );
+
 
 
 // 3. REJECT OCCASION DONATION + INITIATE RAZORPAY REFUND
@@ -8867,6 +9048,409 @@ app.patch(
         message:
           "Unable to complete the rejection or refund request.",
         error: error.error?.description || error.message,
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   OCCASION WISHES EMAIL SCHEDULER
+
+   Sends invitation email 2 minutes before scheduledAt.
+
+   Retry policy:
+   - Maximum 5 attempts.
+   - Claims each email atomically.
+   - Recovers stale sending records after 10 minutes.
+========================================================= */
+
+async function processOccasionWishEmails() {
+  const now = new Date();
+
+  try {
+    // Recover records left in "sending" if the server
+    // crashed or restarted while processing an email.
+    await OccasionDonation.updateMany(
+      {
+        wishEmailStatus: "sending",
+        updatedAt: {
+          $lte: new Date(now.getTime() - 10 * 60 * 1000),
+        },
+        wishEmailAttempts: { $lt: 5 },
+      },
+      {
+        $set: {
+          wishEmailStatus: "failed",
+          wishEmailLastError:
+            "Previous email attempt did not finish. Retrying.",
+        },
+      }
+    );
+
+    const dueDonations = await OccasionDonation.find({
+      adminStatus: "approved",
+      paymentStatus: "paid",
+      wishEmailStatus: { $in: ["pending", "failed"] },
+      wishEmailScheduledAt: { $lte: now },
+      wishEmailAttempts: { $lt: 5 },
+      recipientEmail: { $ne: "" },
+    })
+      .select("_id")
+      .limit(20)
+      .lean();
+
+    for (const item of dueDonations) {
+      try {
+        // Atomically claim the email to prevent two workers
+        // from processing the same donation simultaneously.
+        const donation = await OccasionDonation.findOneAndUpdate(
+          {
+            _id: item._id,
+            adminStatus: "approved",
+            paymentStatus: "paid",
+            wishEmailStatus: { $in: ["pending", "failed"] },
+            wishEmailAttempts: { $lt: 5 },
+            wishEmailScheduledAt: { $lte: new Date() },
+          },
+          {
+            $set: {
+              wishEmailStatus: "sending",
+              wishEmailLastError: "",
+            },
+            $inc: {
+              wishEmailAttempts: 1,
+            },
+          },
+          {
+            new: true,
+          }
+        ).select("+wishAccessTokenEncrypted");
+
+        if (!donation) {
+          continue;
+        }
+
+        if (!donation.wishAccessTokenEncrypted) {
+          throw new Error("Encrypted wishes token is missing.");
+        }
+
+        const rawToken = decryptWishToken(
+          donation.wishAccessTokenEncrypted
+        );
+
+        const frontendUrl = (
+          process.env.FRONTEND_URL || "https://www.dwjd.online"
+        ).replace(/\/+$/, "");
+
+        const wishesUrl =
+          `${frontendUrl}/wishes/${rawToken}`;
+
+        const recipientName = escapeWishHtml(
+          donation.recipientName
+        );
+
+        const occasionType = escapeWishHtml(
+          donation.occasionType
+        );
+
+        const occasionTitle = escapeWishHtml(
+          donation.occasionTitle || occasionType
+        );
+
+        const scheduledTime = new Intl.DateTimeFormat(
+          "en-IN",
+          {
+            dateStyle: "full",
+            timeStyle: "short",
+            timeZone: "Asia/Kolkata",
+          }
+        ).format(donation.scheduledAt);
+
+        const safeScheduledTime =
+          escapeWishHtml(scheduledTime);
+
+        const html = `
+          <!DOCTYPE html>
+          <html>
+          <body style="
+            margin:0;
+            padding:30px 15px;
+            background:#f8f5ff;
+            font-family:Arial,sans-serif;
+          ">
+            <div style="
+              max-width:560px;
+              margin:auto;
+              padding:35px 25px;
+              background:#ffffff;
+              border-radius:18px;
+              text-align:center;
+            ">
+              <div style="font-size:45px;">🎁</div>
+
+              <h1 style="color:#7c3aed;">
+                A Special Surprise Is Waiting!
+              </h1>
+
+              <p style="font-size:17px;color:#334155;">
+                Hello ${recipientName},
+              </p>
+
+              <p style="
+                color:#475569;
+                line-height:1.8;
+              ">
+                Someone has prepared a special surprise
+                for you for your ${occasionType}.
+              </p>
+
+              <h2 style="color:#9333ea;">
+                ${occasionTitle}
+              </h2>
+
+              <p style="color:#64748b;">
+                Your wishes will unlock at:
+              </p>
+
+              <p style="
+                font-weight:bold;
+                color:#334155;
+              ">
+                ${safeScheduledTime} IST
+              </p>
+
+              <a
+                href="${wishesUrl}"
+                style="
+                  display:inline-block;
+                  margin-top:20px;
+                  padding:15px 28px;
+                  background:#7c3aed;
+                  color:#ffffff;
+                  text-decoration:none;
+                  border-radius:10px;
+                  font-weight:bold;
+                "
+              >
+                Open Your Surprise
+              </a>
+
+              <p style="
+                margin-top:25px;
+                font-size:12px;
+                color:#94a3b8;
+              ">
+                Your surprise will become visible
+                at the scheduled time.
+              </p>
+
+              <p style="
+                margin-top:25px;
+                color:#64748b;
+              ">
+                With love,<br/>
+                <strong>DWJD Team</strong>
+              </p>
+            </div>
+          </body>
+          </html>
+        `;
+
+        await sendEmail({
+          to: donation.recipientEmail,
+          subject: "🎁 A Special Surprise Is Waiting for You!",
+          html,
+        });
+
+        await OccasionDonation.updateOne(
+          {
+            _id: donation._id,
+            wishEmailStatus: "sending",
+          },
+          {
+            $set: {
+              wishEmailStatus: "sent",
+              wishEmailSentAt: new Date(),
+              wishEmailLastError: "",
+            },
+          }
+        );
+
+        console.log(
+          "Occasion wishes invitation email sent:",
+          donation.referenceCode
+        );
+
+      } catch (emailError) {
+        console.error(
+          "Occasion wishes email error:",
+          emailError.response?.data || emailError.message
+        );
+
+        await OccasionDonation.updateOne(
+          {
+            _id: item._id,
+            wishEmailStatus: "sending",
+          },
+          {
+            $set: {
+              wishEmailStatus: "failed",
+              wishEmailLastError: String(
+                emailError.message || "Email delivery failed."
+              ).slice(0, 2000),
+            },
+          }
+        );
+      }
+    }
+  } catch (error) {
+    console.error(
+      "Occasion wishes scheduler error:",
+      error
+    );
+  }
+}
+
+// Check for due emails every minute.
+cron.schedule("* * * * *", () => {
+  processOccasionWishEmails();
+});
+
+/* =========================================================
+   PUBLIC OCCASION WISHES API
+
+   GET /api/occasion-donations/public/wishes/:token
+
+   No authentication required.
+========================================================= */
+
+app.get(
+  "/api/occasion-donations/public/wishes/:token",
+  async (req, res) => {
+    try {
+      const { token } = req.params;
+
+      if (
+        typeof token !== "string" ||
+        !/^[a-f0-9]{64}$/i.test(token)
+      ) {
+        return res.status(404).json({
+          ok: false,
+          status: "error",
+          message: "This wishes link is invalid.",
+        });
+      }
+
+      const tokenHash = crypto
+        .createHash("sha256")
+        .update(token)
+        .digest("hex");
+
+      const donation = await OccasionDonation.findOne({
+        wishAccessTokenHash: tokenHash,
+      }).lean();
+
+      if (!donation) {
+        return res.status(404).json({
+          ok: false,
+          status: "error",
+          message: "This wishes link is invalid or unavailable.",
+        });
+      }
+
+      if (
+        donation.wishPageStatus === "disabled" ||
+        donation.wishPageStatus === "expired"
+      ) {
+        return res.status(410).json({
+          ok: false,
+          status: donation.wishPageStatus,
+          message: "This wishes page is no longer available.",
+        });
+      }
+
+      if (
+        donation.adminStatus !== "approved" ||
+        donation.paymentStatus !== "paid"
+      ) {
+        return res.status(404).json({
+          ok: false,
+          status: "error",
+          message: "This wishes page is unavailable.",
+        });
+      }
+
+      const now = new Date();
+
+      if (
+        donation.wishPageExpiresAt &&
+        now >= new Date(donation.wishPageExpiresAt)
+      ) {
+        return res.status(410).json({
+          ok: false,
+          status: "expired",
+          message: "This wishes page has expired.",
+        });
+      }
+
+      // LOCKED PAGE
+      if (now < new Date(donation.scheduledAt)) {
+        return res.status(200).json({
+          ok: true,
+          status: "locked",
+          wish: {
+            recipientName: donation.recipientName,
+            occasionType: donation.occasionType,
+            occasionTitle: donation.occasionTitle,
+            scheduledAt: donation.scheduledAt,
+          },
+        });
+      }
+
+      // PUBLISHED PAGE
+      await OccasionDonation.updateOne(
+        {
+          _id: donation._id,
+          wishPageStatus: "locked",
+        },
+        {
+          $set: {
+            wishPageStatus: "published",
+            wishPagePublishedAt: now,
+          },
+        }
+      );
+
+      return res.status(200).json({
+        ok: true,
+        status: "published",
+        wish: {
+          recipientName: donation.recipientName,
+          occasionType: donation.occasionType,
+          occasionTitle: donation.occasionTitle,
+          dedicationName: donation.dedicationName,
+          donorMessage: donation.donorMessage,
+          scheduledAt: donation.scheduledAt,
+          media: (donation.media || []).map((item) => ({
+            url: item.url,
+            name: item.name,
+            mimeType: item.mimeType,
+            resourceType: item.resourceType,
+          })),
+        },
+      });
+
+    } catch (error) {
+      console.error(
+        "Public occasion wishes API error:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        status: "error",
+        message: "Unable to load this wishes page.",
       });
     }
   }

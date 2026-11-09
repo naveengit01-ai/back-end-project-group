@@ -1,5 +1,6 @@
 
 const mongoose = require("mongoose");
+const crypto = require("crypto");
 
 const occasionDonationSchema = new mongoose.Schema(
   {
@@ -245,6 +246,7 @@ const occasionDonationSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Existing greeting delivery workflow
     greetingStatus: {
       type: String,
       enum: [
@@ -274,6 +276,90 @@ const occasionDonationSchema = new mongoose.Schema(
       default: "",
     },
 
+    // =========================================
+    // UNIQUE WISHES LINK
+    // =========================================
+
+    // Store only the SHA-256 hash of the public token.
+    // Never store the original token in MongoDB.
+    wishAccessTokenHash: {
+      type: String,
+      default: "",
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+    wishAccessTokenEncrypted: {
+  type: String,
+  default: "",
+  select: false,
+},
+
+    // =========================================
+    // WISHES EMAIL DELIVERY
+    // =========================================
+
+    wishEmailStatus: {
+      type: String,
+      enum: [
+        "not_created",
+        "pending",
+        "sending",
+        "sent",
+        "failed",
+      ],
+      default: "not_created",
+      index: true,
+    },
+
+    wishEmailScheduledAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    wishEmailSentAt: {
+      type: Date,
+      default: null,
+    },
+
+    wishEmailAttempts: {
+      type: Number,
+      default: 0,
+    },
+
+    wishEmailLastError: {
+      type: String,
+      default: "",
+      maxlength: 2000,
+    },
+
+    // =========================================
+    // WISHES PAGE VISIBILITY
+    // =========================================
+
+    wishPageStatus: {
+      type: String,
+      enum: [
+        "locked",
+        "published",
+        "expired",
+        "disabled",
+      ],
+      default: "locked",
+      index: true,
+    },
+
+    wishPagePublishedAt: {
+      type: Date,
+      default: null,
+    },
+
+    wishPageExpiresAt: {
+      type: Date,
+      default: null,
+    },
+
     termsAccepted: {
       type: Boolean,
       required: true,
@@ -285,11 +371,15 @@ const occasionDonationSchema = new mongoose.Schema(
   }
 );
 
+// =========================================
+// VALIDATION AND REFERENCE CODE
+// =========================================
+
 occasionDonationSchema.pre("validate", function () {
   if (!this.referenceCode) {
     this.referenceCode =
       `DWJD-OD-${Date.now().toString(36).toUpperCase()}-` +
-      `${require("crypto").randomBytes(3).toString("hex").toUpperCase()}`;
+      `${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
   }
 
   if (!this.recipientEmail && !this.recipientPhone) {
